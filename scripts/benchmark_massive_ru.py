@@ -108,6 +108,53 @@ def main() -> int:
     test_frame = clean(test_frame)
     if train_frame["intent"].nunique() < 2 or test_frame["intent"].nunique() < 2:
         raise RuntimeError("The downloaded dataset does not contain enough intent classes.")
+
+    # MASSIVE can contain exactly normalized utterances assigned to different intents.
+    # Do not weaken AMORPH's fail-closed duplicate validation or arbitrarily relabel data:
+    # remove every training row belonging to a conflicting normalized-text group and record
+    # counts plus hashes. Keep the official test partition untouched for report-only evaluation.
+    train_rows_after_required_field_filter = len(train_frame)
+    normalized_train_text = (
+        train_frame["utt"].str.replace(r"\s+", " ", regex=True)
+        .str.strip()
+        .str.casefold()
+    )
+    conflict_check = train_frame.assign(_normalized_text=normalized_train_text)
+    labels_per_normalized_text = conflict_check.groupby("_normalized_text")["intent"].nunique()
+    conflicting_text_keys = sorted(
+        labels_per_normalized_text[labels_per_normalized_text > 1].index.tolist()
+    )
+    conflicting_key_set = set(conflicting_text_keys)
+    conflicting_mask = normalized_train_text.isin(conflicting_key_set)
+    removed_conflict_rows = train_frame.loc[conflicting_mask, ["utt", "intent", "worker_id"]]
+    conflict_keys_sha256 = hashlib.sha256(
+        "\n".join(conflicting_text_keys).encode("utf-8")
+    ).hexdigest()
+    conflict_rows_canonical = "\n".join(
+        f"{normalized}\t{label}\t{worker_id}"
+        for normalized, label, worker_id in zip(
+            normalized_train_text[conflicting_mask].tolist(),
+            removed_conflict_rows["intent"].tolist(),
+            removed_conflict_rows["worker_id"].tolist(),
+        )
+    )
+    training_conflicting_text_filter = {
+        "policy": "drop_all_training_rows_for_conflicting_normalized_text_groups",
+        "normalization": "collapse_whitespace_then_strip_then_casefold",
+        "ambiguous_normalized_text_groups_removed": len(conflicting_text_keys),
+        "training_rows_removed": int(conflicting_mask.sum()),
+        "training_rows_retained": int((~conflicting_mask).sum()),
+        "rows_after_required_field_filter_before_conflict_removal": train_rows_after_required_field_filter,
+        "conflicting_text_keys_sha256": conflict_keys_sha256,
+        "removed_training_rows_sha256": hashlib.sha256(
+            conflict_rows_canonical.encode("utf-8")
+        ).hexdigest(),
+    }
+    train_frame = train_frame.loc[~conflicting_mask].reset_index(drop=True)
+    if train_frame["intent"].nunique() < 2:
+        raise RuntimeError(
+            "Conflicting-text removal left fewer than two training intent classes."
+        )
     train_label_set = set(train_frame["intent"])
     test_label_set = set(test_frame["intent"])
     unseen_test_labels = sorted(test_label_set - train_label_set)
@@ -132,13 +179,14 @@ def main() -> int:
         "attribution": "Amazon Science / AmazonScience/MASSIVE; see the dataset card for required citation and attribution.",
         "downloaded_at_utc": datetime.now(timezone.utc).isoformat(),
         "source_files": {
-            "train_parquet": {"path": str(train_source), "sha256": sha256_file(train_source), "rows_after_required-field_filter": len(train_frame)},
+            "train_parquet": {"path": str(train_source), "sha256": sha256_file(train_source), "rows_after_required-field_filter": train_rows_after_required_field_filter},
             "test_parquet": {"path": str(test_source), "sha256": sha256_file(test_source), "rows_after_required-field_filter": len(test_frame)},
         },
         "prepared_files": {
             "train_csv": {"path": str(train_csv), "sha256": sha256_file(train_csv), "rows": len(train_frame)},
             "official_test_csv": {"path": str(test_csv), "sha256": sha256_file(test_csv), "rows": len(test_frame)},
         },
+        "training_conflicting_text_filter": training_conflicting_text_filter,
         "train_label_count": int(train_frame["intent"].nunique()),
         "test_label_count": int(test_frame["intent"].nunique()),
         "train_labels_absent_from_official_test": train_labels_absent_from_test,
@@ -153,6 +201,7 @@ def main() -> int:
             "AMORPH still makes its internal train/validation/gate/test split within the official train partition, so only its train subset fits the models.",
             "The official test partition may include annotation-worker identities also represented in the official training partition; report worker-disjoint internal metrics separately.",
             "The official test can omit a label present in training; missing test-label support is recorded explicitly and must be considered when interpreting macro metrics.",
+            "All official-training rows whose normalized utterance has multiple intent labels are excluded wholesale before AMORPH validation; counts and hashes are recorded. This changes the effective training sample and is a benchmark limitation.",
         ],
     }
     if train_labels_absent_from_test:
