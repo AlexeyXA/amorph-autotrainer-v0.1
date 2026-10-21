@@ -145,7 +145,7 @@ def main() -> int:
         "official_test_label_coverage_fraction": (
             len(test_label_set & train_label_set) / len(train_label_set)
         ),
-        "train_group_count_worker_id": int(train_frame["group_id"].nunique()),
+        "train_group_count_worker_id": int(train_frame["worker_id"].nunique()),
         "split_policy": "Official MASSIVE train partition only enters AMORPH. Rows sharing worker_id stay in one internal split. Official MASSIVE test is evaluated only after strategy selection and is never used by the selector or acceptance gate.",
         "limitations": [
             "This is a public benchmark, not proof of production performance on a business-specific distribution.",
