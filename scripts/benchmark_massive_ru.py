@@ -156,16 +156,34 @@ def main() -> int:
             "Conflicting-text removal left fewer than two training intent classes."
         )
 
-    # AMORPH's internal split requires at least five unique examples in every class.
-    # Exclude whole under-supported training classes explicitly, rather than failing
-    # later inside load_records or silently relaxing the model's validation rules.
+    # AMORPH's grouped split requires at least five unique texts and five distinct
+    # worker groups per class. Emulate its first-occurrence exact-dedup policy here
+    # so eligibility is computed on the rows/groups that load_records will retain.
     minimum_train_examples_per_class = 5
-    counts_after_conflict_filter = train_frame["intent"].value_counts()
-    low_support_labels = sorted(
+    minimum_worker_groups_per_class = 5
+    support_normalized_text = (
+        train_frame["utt"].str.replace(r"\s+", " ", regex=True)
+        .str.strip()
+        .str.casefold()
+    )
+    unique_support_rows = train_frame.assign(
+        _normalized_text=support_normalized_text
+    ).drop_duplicates(subset=["_normalized_text"], keep="first")
+    counts_after_conflict_filter = unique_support_rows["intent"].value_counts()
+    worker_groups_after_conflict_filter = (
+        unique_support_rows.groupby("intent")["worker_id"].nunique()
+    )
+    low_count_labels = set(
         counts_after_conflict_filter[
             counts_after_conflict_filter < minimum_train_examples_per_class
         ].index.tolist()
     )
+    low_group_labels = set(
+        worker_groups_after_conflict_filter[
+            worker_groups_after_conflict_filter < minimum_worker_groups_per_class
+        ].index.tolist()
+    )
+    low_support_labels = sorted(low_count_labels | low_group_labels)
     low_support_mask = train_frame["intent"].isin(low_support_labels)
     low_support_rows = train_frame.loc[low_support_mask, ["utt", "intent", "worker_id"]]
     low_support_canonical = "\n".join(
@@ -173,12 +191,22 @@ def main() -> int:
         for text, label, worker_id in low_support_rows.itertuples(index=False, name=None)
     )
     training_low_support_class_filter = {
-        "policy": "exclude_whole_train_classes_below_minimum_support",
-        "minimum_examples_per_class": minimum_train_examples_per_class,
+        "policy": "exclude_whole_train_classes_below_unique_text_or_worker_group_floor",
+        "normalization": "collapse_whitespace_then_strip_then_casefold",
+        "duplicate_policy_for_support_counts": "first occurrence retained, matching AMORPH load_records",
+        "minimum_unique_text_examples_per_class": minimum_train_examples_per_class,
+        "minimum_distinct_worker_groups_per_class": minimum_worker_groups_per_class,
         "excluded_labels": low_support_labels,
-        "excluded_label_counts": {
-            label: int(counts_after_conflict_filter[label]) for label in low_support_labels
+        "excluded_label_unique_text_counts": {
+            label: int(counts_after_conflict_filter.get(label, 0))
+            for label in low_support_labels
         },
+        "excluded_label_worker_group_counts": {
+            label: int(worker_groups_after_conflict_filter.get(label, 0))
+            for label in low_support_labels
+        },
+        "labels_below_unique_text_floor": sorted(low_count_labels),
+        "labels_below_worker_group_floor": sorted(low_group_labels),
         "training_rows_removed": int(low_support_mask.sum()),
         "training_rows_retained": int((~low_support_mask).sum()),
         "removed_training_rows_sha256": hashlib.sha256(
@@ -235,7 +263,7 @@ def main() -> int:
             "The official test partition may include annotation-worker identities also represented in the official training partition; report worker-disjoint internal metrics separately.",
             "The official test can omit a label present in training; missing test-label support is recorded explicitly and must be considered when interpreting macro metrics.",
             "All official-training rows whose normalized utterance has multiple intent labels are excluded wholesale before AMORPH validation; counts and hashes are recorded. This changes the effective training sample and is a benchmark limitation.",
-            "Training labels with fewer than five examples after ambiguous-text removal are excluded wholesale to satisfy AMORPH's minimum split support. Official test rows are never removed; labels without training support are reported explicitly.",
+            "Training labels with fewer than five unique normalized texts or fewer than five distinct worker groups after ambiguous-text removal are excluded wholesale to satisfy AMORPH's grouped-split constraints. Official test rows are never removed; labels without training support are reported explicitly.",
         ],
     }
     if train_labels_absent_from_test:
