@@ -108,9 +108,15 @@ def main() -> int:
     test_frame = clean(test_frame)
     if train_frame["intent"].nunique() < 2 or test_frame["intent"].nunique() < 2:
         raise RuntimeError("The downloaded dataset does not contain enough intent classes.")
-    missing_in_test = sorted(set(train_frame["intent"]) - set(test_frame["intent"]))
-    if missing_in_test:
-        raise RuntimeError(f"Official test partition lacks training labels: {missing_in_test}")
+    train_label_set = set(train_frame["intent"])
+    test_label_set = set(test_frame["intent"])
+    unseen_test_labels = sorted(test_label_set - train_label_set)
+    if unseen_test_labels:
+        raise RuntimeError(
+            "Official test partition contains labels absent from training: "
+            f"{unseen_test_labels}"
+        )
+    train_labels_absent_from_test = sorted(train_label_set - test_label_set)
 
     train_csv = data_dir / "massive_ru_train.csv"
     test_csv = data_dir / "massive_ru_official_test.csv"
@@ -135,6 +141,10 @@ def main() -> int:
         },
         "train_label_count": int(train_frame["label"].nunique()),
         "test_label_count": int(test_frame["label"].nunique()),
+        "train_labels_absent_from_official_test": train_labels_absent_from_test,
+        "official_test_label_coverage_fraction": (
+            len(test_label_set & train_label_set) / len(train_label_set)
+        ),
         "train_group_count_worker_id": int(train_frame["group_id"].nunique()),
         "split_policy": "Official MASSIVE train partition only enters AMORPH. Rows sharing worker_id stay in one internal split. Official MASSIVE test is evaluated only after strategy selection and is never used by the selector or acceptance gate.",
         "limitations": [
@@ -142,8 +152,14 @@ def main() -> int:
             "MASSIVE intent classification is a 60-class voice-assistant task, not retrieval/RAG or generative-model fine-tuning.",
             "AMORPH still makes its internal train/validation/gate/test split within the official train partition, so only its train subset fits the models.",
             "The official test partition may include annotation-worker identities also represented in the official training partition; report worker-disjoint internal metrics separately.",
+            "The official test can omit a label present in training; missing test-label support is recorded explicitly and must be considered when interpreting macro metrics.",
         ],
     }
+    if train_labels_absent_from_test:
+        provenance["limitations"].append(
+            "Training labels absent from the official test partition: "
+            + ", ".join(train_labels_absent_from_test)
+        )
     write_json(out / "dataset_provenance.json", provenance)
 
     # Imports are delayed so data provenance is retained even if AMORPH fails.
@@ -180,13 +196,44 @@ def main() -> int:
 
     test_texts = test_frame["utt"].tolist()
     test_labels = np.asarray(test_frame["intent"].tolist())
+    expected_labels = sorted(train_label_set)
+
+    def external_classification_metrics(y_true, y_pred):
+        metrics = classification_metrics(y_true, y_pred)
+        from sklearn.metrics import f1_score, recall_score
+
+        metrics["macro_f1_fixed_training_label_universe"] = float(
+            f1_score(
+                y_true, y_pred, labels=expected_labels,
+                average="macro", zero_division=0,
+            )
+        )
+        metrics["balanced_accuracy_fixed_training_label_universe"] = float(
+            recall_score(
+                y_true, y_pred, labels=expected_labels,
+                average="macro", zero_division=0,
+            )
+        )
+        observed = set(y_true.tolist())
+        metrics["training_label_count"] = len(expected_labels)
+        metrics["official_test_labels_absent_from_support"] = sorted(
+            set(expected_labels) - observed
+        )
+        metrics["official_test_label_coverage_fraction"] = (
+            len(observed & set(expected_labels)) / len(expected_labels)
+        )
+        metrics["test_support_by_training_label"] = {
+            label: int(np.sum(y_true == label)) for label in expected_labels
+        }
+        return metrics
+
     run_dir = Path(result["run_dir"])
 
     tfidf_model_path = run_dir / "candidates" / "tfidf" / "model.joblib"
     tfidf_model = joblib.load(tfidf_model_path)
     tfidf_predictions = tfidf_model.predict(test_texts)
     external_metrics = {
-        "tfidf": classification_metrics(test_labels, tfidf_predictions),
+        "tfidf": external_classification_metrics(test_labels, tfidf_predictions),
     }
 
     if args.with_e5 and (run_dir / "candidates" / "e5" / "classifier.joblib").is_file():
@@ -197,7 +244,9 @@ def main() -> int:
         )
         classifier = joblib.load(e5_dir / "classifier.joblib")
         e5_features = E5Candidate._encode(encoder, test_texts)
-        external_metrics["e5"] = classification_metrics(test_labels, classifier.predict(e5_features))
+        external_metrics["e5"] = external_classification_metrics(
+            test_labels, classifier.predict(e5_features)
+        )
 
     benchmark_result = {
         "project": "AMORPH AutoTrainer",
@@ -217,6 +266,8 @@ def main() -> int:
         "official_test_rows": len(test_frame),
         "train_classes": int(train_frame["label"].nunique()),
         "test_classes": int(test_frame["label"].nunique()),
+        "train_labels_absent_from_official_test": train_labels_absent_from_test,
+        "official_test_label_coverage_fraction": provenance["official_test_label_coverage_fraction"],
         "selected_strategy": result["selected_strategy"],
         "external_test_metrics_by_strategy": external_metrics,
         "provenance_file": str(out / "dataset_provenance.json"),
