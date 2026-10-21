@@ -1,0 +1,11 @@
+--- a/amorph_autotrainer/pipeline.py
++++ b/amorph_autotrainer/pipeline.py
+@@ -145,6 +145,8 @@
+         records, dataset_hash, data_report, seed=config.random_seed,
+         near_duplicate_threshold=near_duplicate_threshold,
+         max_near_duplicate_audit_rows=max_near_duplicate_audit_rows,
++        min_examples_per_label_in_gate=config.min_gate_examples_per_class,
++        min_examples_per_label_in_other_splits=1,
+     )
+     _write_json(root / "data_report.json", bundle.report)
+     if time.perf_counter() - started_all >= config.max_runtime_seconds:
