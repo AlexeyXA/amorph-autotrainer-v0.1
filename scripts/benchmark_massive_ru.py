@@ -139,8 +139,8 @@ def main() -> int:
             "train_csv": {"path": str(train_csv), "sha256": sha256_file(train_csv), "rows": len(train_frame)},
             "official_test_csv": {"path": str(test_csv), "sha256": sha256_file(test_csv), "rows": len(test_frame)},
         },
-        "train_label_count": int(train_frame["label"].nunique()),
-        "test_label_count": int(test_frame["label"].nunique()),
+        "train_label_count": int(train_frame["intent"].nunique()),
+        "test_label_count": int(test_frame["intent"].nunique()),
         "train_labels_absent_from_official_test": train_labels_absent_from_test,
         "official_test_label_coverage_fraction": (
             len(test_label_set & train_label_set) / len(train_label_set)
@@ -264,8 +264,8 @@ def main() -> int:
         "output_dir": str(out),
         "train_rows": len(train_frame),
         "official_test_rows": len(test_frame),
-        "train_classes": int(train_frame["label"].nunique()),
-        "test_classes": int(test_frame["label"].nunique()),
+        "train_classes": int(train_frame["intent"].nunique()),
+        "test_classes": int(test_frame["intent"].nunique()),
         "train_labels_absent_from_official_test": train_labels_absent_from_test,
         "official_test_label_coverage_fraction": provenance["official_test_label_coverage_fraction"],
         "selected_strategy": result["selected_strategy"],
