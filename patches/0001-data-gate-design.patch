@@ -1,0 +1,29 @@
+--- a/amorph_autotrainer/data.py
++++ b/amorph_autotrainer/data.py
+@@ -250,14 +250,23 @@
+     validation_fraction: float,
+     gate_fraction: float,
+     test_fraction: float,
+-    time_limit_seconds: float = 10.0,
++    min_examples_per_label_in_gate: int = 5,
++    min_examples_per_label_in_other_splits: int = 1,
++    time_limit_seconds: float = 15.0,
+ ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
+     """Assign whole groups to train/validation/gate/test jointly with a MILP.
+ 
+-    The optimizer must put every class in every split and each group in exactly one
+-    split. Its objective minimizes normalized absolute deviations from requested row
+-    fractions. A time-limited incumbent is accepted only after validating all hard
+-    constraints; otherwise this routine fails closed.
++    Hard constraints:
++    - each group in exactly one split;
++    - every label appears in every split;
++    - each label contributes at least ``min_examples_per_label_in_gate`` rows to the
++      acceptance-gate split (default 5, matching CostConfig.min_gate_examples_per_class);
++    - each label contributes at least ``min_examples_per_label_in_other_splits`` rows
++      to train, validation and internal test (default 1).
++
++    Objective minimizes normalized absolute deviations from requested row fractions.
++    A time-limited incumbent is accepted only after validating hard constraints;
++    otherwise this routine fails closed.
+     """
