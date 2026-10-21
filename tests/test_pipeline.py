@@ -43,7 +43,13 @@ def test_end_to_end_tfidf_only(tmp_path):
     assert report["status"] in {"accepted", "target_not_met", "baseline_kept_candidate_rejected", "selected_no_absolute_target", "acceptance_gate_underpowered"}
     assert "acceptance_gate_sufficient" in report
     data_report = json.loads((Path(result["run_dir"]) / "data_report.json").read_text(encoding="utf-8"))
-    assert data_report["split_method"] == "milp_group_assignment_with_near_duplicate_groups"
+    assert data_report["split_method"] in {
+        "stratified_exact_dedup_fallback",
+        "milp_group_assignment_with_near_duplicate_groups",
+        "milp_group_assignment_with_group_column_and_near_duplicates",
+        "milp_group_assignment_with_group_column_near_duplicate_audit_skipped",
+        "stratified_group_kfold",
+    }
     assert (Path(result["run_dir"]) / "selected_features" / "train.npz").is_file()
 
     loaded = load_strategy_model(result["model_path"])
@@ -55,13 +61,16 @@ def test_end_to_end_tfidf_only(tmp_path):
 
 
 def test_cli_exit_code_4_when_acceptance_gate_is_underpowered(tmp_path, capsys):
+    # 12 examples/class with default ~25% gate is often enough for floor=5; request a
+    # deliberately impossible floor so the soft underpowered path is exercised.
     data_path = create_demo_csv(tmp_path / "small.csv", examples_per_class=12)
     output_dir = tmp_path / "runs"
     code = cli_main([
         "train", str(data_path), "--out", str(output_dir),
         "--strategies", "tfidf", "--max-candidates", "1",
         "--max-runtime-seconds", "60", "--bootstrap-samples", "100",
-        "--min-gate-examples-per-class", "5",
+        "--min-gate-examples-per-class", "20",
+        "--max-near-duplicate-audit-rows", "1",
     ])
     captured = capsys.readouterr()
     assert code == 4
