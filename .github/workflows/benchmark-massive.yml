@@ -27,6 +27,9 @@ jobs:
       - name: Install package and benchmark dependencies
         run: |
           python -m pip install --upgrade pip
+          # Hosted GitHub runners use CPU for this job. Install the CPU wheel first
+          # so the optional E5 stack does not pull the much larger CUDA dependency set.
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.0"
           python -m pip install -e ".[test,embeddings]" pandas pyarrow huggingface_hub
       - name: Record start time
         id: clock
