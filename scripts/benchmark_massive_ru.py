@@ -155,14 +155,45 @@ def main() -> int:
         raise RuntimeError(
             "Conflicting-text removal left fewer than two training intent classes."
         )
+
+    # AMORPH's internal split requires at least five unique examples in every class.
+    # Exclude whole under-supported training classes explicitly, rather than failing
+    # later inside load_records or silently relaxing the model's validation rules.
+    minimum_train_examples_per_class = 5
+    counts_after_conflict_filter = train_frame["intent"].value_counts()
+    low_support_labels = sorted(
+        counts_after_conflict_filter[
+            counts_after_conflict_filter < minimum_train_examples_per_class
+        ].index.tolist()
+    )
+    low_support_mask = train_frame["intent"].isin(low_support_labels)
+    low_support_rows = train_frame.loc[low_support_mask, ["utt", "intent", "worker_id"]]
+    low_support_canonical = "\n".join(
+        f"{text}\t{label}\t{worker_id}"
+        for text, label, worker_id in low_support_rows.itertuples(index=False, name=None)
+    )
+    training_low_support_class_filter = {
+        "policy": "exclude_whole_train_classes_below_minimum_support",
+        "minimum_examples_per_class": minimum_train_examples_per_class,
+        "excluded_labels": low_support_labels,
+        "excluded_label_counts": {
+            label: int(counts_after_conflict_filter[label]) for label in low_support_labels
+        },
+        "training_rows_removed": int(low_support_mask.sum()),
+        "training_rows_retained": int((~low_support_mask).sum()),
+        "removed_training_rows_sha256": hashlib.sha256(
+            low_support_canonical.encode("utf-8")
+        ).hexdigest(),
+    }
+    train_frame = train_frame.loc[~low_support_mask].reset_index(drop=True)
+    if train_frame["intent"].nunique() < 2:
+        raise RuntimeError(
+            "Filtering under-supported training classes left fewer than two classes."
+        )
+
     train_label_set = set(train_frame["intent"])
     test_label_set = set(test_frame["intent"])
-    unseen_test_labels = sorted(test_label_set - train_label_set)
-    if unseen_test_labels:
-        raise RuntimeError(
-            "Official test partition contains labels absent from training: "
-            f"{unseen_test_labels}"
-        )
+    test_labels_without_training_support = sorted(test_label_set - train_label_set)
     train_labels_absent_from_test = sorted(train_label_set - test_label_set)
 
     train_csv = data_dir / "massive_ru_train.csv"
@@ -187,9 +218,11 @@ def main() -> int:
             "official_test_csv": {"path": str(test_csv), "sha256": sha256_file(test_csv), "rows": len(test_frame)},
         },
         "training_conflicting_text_filter": training_conflicting_text_filter,
+        "training_low_support_class_filter": training_low_support_class_filter,
         "train_label_count": int(train_frame["intent"].nunique()),
         "test_label_count": int(test_frame["intent"].nunique()),
         "train_labels_absent_from_official_test": train_labels_absent_from_test,
+        "official_test_labels_without_training_support": test_labels_without_training_support,
         "official_test_label_coverage_fraction": (
             len(test_label_set & train_label_set) / len(train_label_set)
         ),
@@ -202,6 +235,7 @@ def main() -> int:
             "The official test partition may include annotation-worker identities also represented in the official training partition; report worker-disjoint internal metrics separately.",
             "The official test can omit a label present in training; missing test-label support is recorded explicitly and must be considered when interpreting macro metrics.",
             "All official-training rows whose normalized utterance has multiple intent labels are excluded wholesale before AMORPH validation; counts and hashes are recorded. This changes the effective training sample and is a benchmark limitation.",
+            "Training labels with fewer than five examples after ambiguous-text removal are excluded wholesale to satisfy AMORPH's minimum split support. Official test rows are never removed; labels without training support are reported explicitly.",
         ],
     }
     if train_labels_absent_from_test:
@@ -268,6 +302,9 @@ def main() -> int:
         metrics["official_test_labels_absent_from_support"] = sorted(
             set(expected_labels) - observed
         )
+        metrics["official_test_labels_without_training_support"] = sorted(
+            observed - set(expected_labels)
+        )
         metrics["official_test_label_coverage_fraction"] = (
             len(observed & set(expected_labels)) / len(expected_labels)
         )
@@ -316,6 +353,7 @@ def main() -> int:
         "train_classes": int(train_frame["intent"].nunique()),
         "test_classes": int(test_frame["intent"].nunique()),
         "train_labels_absent_from_official_test": train_labels_absent_from_test,
+        "official_test_labels_without_training_support": test_labels_without_training_support,
         "official_test_label_coverage_fraction": provenance["official_test_label_coverage_fraction"],
         "selected_strategy": result["selected_strategy"],
         "external_test_metrics_by_strategy": external_metrics,
