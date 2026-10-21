@@ -1,0 +1,30 @@
+--- a/scripts/benchmark_massive_ru.py
++++ b/scripts/benchmark_massive_ru.py
+@@ -156,11 +156,13 @@
+             "Conflicting-text removal left fewer than two training intent classes."
+         )
+ 
+-    # AMORPH's grouped split requires at least five unique texts and five distinct
+-    # worker groups per class. Emulate its first-occurrence exact-dedup policy here
+-    # so eligibility is computed on the rows/groups that load_records will retain.
+-    minimum_train_examples_per_class = 5
+-    minimum_worker_groups_per_class = 5
++    # Gate design (protocol 1+3): acceptance gate needs >=5 examples/class.
++    # With four group-safe splits, require enough unique texts and worker groups
++    # so a feasible MILP assignment can meet the gate floor (default gate share 25%).
++    # Floor: max(5, 4 * min_gate_examples) unique texts; at least 4 worker groups.
++    min_gate_examples_per_class = 5
++    minimum_train_examples_per_class = max(5, 4 * min_gate_examples_per_class)  # >=20
++    minimum_worker_groups_per_class = 4
+     support_normalized_text = (
+         train_frame["utt"].str.replace(r"\s+", " ", regex=True)
+         .str.strip()
+@@ -191,7 +193,7 @@
+         for text, label, worker_id in low_support_rows.itertuples(index=False, name=None)
+     )
+     training_low_support_class_filter = {
+-        "policy": "exclude_whole_train_classes_below_unique_text_or_worker_group_floor",
++        "policy": "exclude_classes_below_gate_powered_support_floor_4x_min_gate_texts_and_4_worker_groups",
+         "normalization": "collapse_whitespace_then_strip_then_casefold",
+         "duplicate_policy_for_support_counts": "first occurrence retained, matching AMORPH load_records",
+         "minimum_unique_text_examples_per_class": minimum_train_examples_per_class,
