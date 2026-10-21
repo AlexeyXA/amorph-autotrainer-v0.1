@@ -4,13 +4,14 @@ import csv
 import hashlib
 import json
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.model_selection import StratifiedGroupKFold, train_test_split
+from sklearn.model_selection import train_test_split
 from sklearn.neighbors import NearestNeighbors
 
 
@@ -240,31 +241,233 @@ def _near_duplicate_groups(
     return group_ids, report
 
 
-def _choose_group_split(
+def _choose_four_way_group_split(
     indices: np.ndarray,
     labels: np.ndarray,
     groups: np.ndarray,
     *,
-    n_splits: int,
-    target_fraction: float,
-    seed: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    all_labels = set(labels.tolist())
-    splitter = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=seed)
-    candidates: list[tuple[float, np.ndarray, np.ndarray]] = []
-    for train_local, holdout_local in splitter.split(indices, labels, groups):
-        train_labels = set(labels[train_local].tolist())
-        holdout_labels = set(labels[holdout_local].tolist())
-        if train_labels == all_labels and holdout_labels == all_labels:
-            fraction_error = abs(len(holdout_local) / len(indices) - target_fraction)
-            candidates.append((fraction_error, train_local, holdout_local))
-    if not candidates:
+    train_fraction: float,
+    validation_fraction: float,
+    gate_fraction: float,
+    test_fraction: float,
+    time_limit_seconds: float = 10.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
+    """Assign whole groups to train/validation/gate/test jointly with a MILP.
+
+    The optimizer must put every class in every split and each group in exactly one
+    split. Its objective minimizes normalized absolute deviations from requested row
+    fractions. A time-limited incumbent is accepted only after validating all hard
+    constraints; otherwise this routine fails closed.
+    """
+    from scipy.optimize import Bounds, LinearConstraint, milp
+    from scipy.sparse import coo_matrix
+
+    split_names = ("train", "validation", "acceptance_gate", "test")
+    fractions = np.asarray(
+        [train_fraction, validation_fraction, gate_fraction, test_fraction],
+        dtype=float,
+    )
+    if np.any(fractions <= 0) or not np.isclose(fractions.sum(), 1.0, atol=1e-8):
+        raise ValueError(f"Invalid grouped split fractions: {fractions.tolist()}")
+
+    subset_labels = labels[indices]
+    subset_groups = groups[indices]
+    unique_groups, group_inverse = np.unique(subset_groups, return_inverse=True)
+    unique_labels = sorted(set(subset_labels.tolist()), key=str)
+    group_count = len(unique_groups)
+    label_count = len(unique_labels)
+    split_count = len(split_names)
+    if group_count < split_count:
         raise ValueError(
-            "Could not create a group-safe stratified split with every class represented. "
-            "Add examples/near-duplicate groups or revise the data split policy."
+            f"At least {split_count} distinct groups are required for four grouped splits; "
+            f"received {group_count}."
         )
-    _, train_local, holdout_local = min(candidates, key=lambda item: item[0])
-    return indices[train_local], indices[holdout_local]
+
+    label_to_column = {label: column for column, label in enumerate(unique_labels)}
+    group_has_label = np.zeros((group_count, label_count), dtype=bool)
+    for group_index, label in zip(group_inverse, subset_labels):
+        group_has_label[group_index, label_to_column[label]] = True
+    group_weights = np.bincount(group_inverse, minlength=group_count).astype(float)
+
+    # Binary x[group, split] variables, followed by one continuous absolute-size
+    # deviation variable per split.
+    binary_variable_count = group_count * split_count
+    variable_count = binary_variable_count + split_count
+    deviation_start = binary_variable_count
+    total_rows = len(indices)
+    constraint_count = group_count + label_count * split_count + 2 * split_count
+    row_indices: list[int] = []
+    column_indices: list[int] = []
+    coefficients: list[float] = []
+    lower_constraints: list[float] = []
+    upper_constraints: list[float] = []
+    constraint_row = 0
+
+    # Every source group is assigned to exactly one split.
+    for group_index in range(group_count):
+        for split_index in range(split_count):
+            row_indices.append(constraint_row)
+            column_indices.append(group_index * split_count + split_index)
+            coefficients.append(1.0)
+        lower_constraints.append(1.0)
+        upper_constraints.append(1.0)
+        constraint_row += 1
+
+    # Every label must appear in all four splits.
+    for label_column in range(label_count):
+        member_groups = np.flatnonzero(group_has_label[:, label_column])
+        for split_index in range(split_count):
+            for group_index in member_groups:
+                row_indices.append(constraint_row)
+                column_indices.append(int(group_index) * split_count + split_index)
+                coefficients.append(1.0)
+            lower_constraints.append(1.0)
+            upper_constraints.append(np.inf)
+            constraint_row += 1
+
+    # Minimize absolute row-count deviation from each target fraction.
+    for split_index in range(split_count):
+        deviation_column = deviation_start + split_index
+        for group_index, weight in enumerate(group_weights):
+            row_indices.append(constraint_row)
+            column_indices.append(group_index * split_count + split_index)
+            coefficients.append(float(weight))
+        row_indices.append(constraint_row)
+        column_indices.append(deviation_column)
+        coefficients.append(-1.0)
+        lower_constraints.append(-np.inf)
+        upper_constraints.append(float(fractions[split_index] * total_rows))
+        constraint_row += 1
+
+        for group_index, weight in enumerate(group_weights):
+            row_indices.append(constraint_row)
+            column_indices.append(group_index * split_count + split_index)
+            coefficients.append(-float(weight))
+        row_indices.append(constraint_row)
+        column_indices.append(deviation_column)
+        coefficients.append(-1.0)
+        lower_constraints.append(-np.inf)
+        upper_constraints.append(-float(fractions[split_index] * total_rows))
+        constraint_row += 1
+
+    constraints_matrix = coo_matrix(
+        (coefficients, (row_indices, column_indices)),
+        shape=(constraint_count, variable_count),
+        dtype=float,
+    ).tocsr()
+    objective = np.zeros(variable_count, dtype=float)
+    objective[deviation_start:] = 1.0 / fractions
+    integrality = np.zeros(variable_count, dtype=int)
+    integrality[:binary_variable_count] = 1
+    variable_lower = np.zeros(variable_count, dtype=float)
+    variable_upper = np.concatenate(
+        [np.ones(binary_variable_count, dtype=float), np.full(split_count, np.inf)]
+    )
+
+    started = time.perf_counter()
+    solution = milp(
+        c=objective,
+        integrality=integrality,
+        bounds=Bounds(variable_lower, variable_upper),
+        constraints=LinearConstraint(
+            constraints_matrix,
+            np.asarray(lower_constraints, dtype=float),
+            np.asarray(upper_constraints, dtype=float),
+        ),
+        options={
+            "time_limit": time_limit_seconds,
+            "presolve": True,
+            "mip_rel_gap": 0.01,
+        },
+    )
+    solve_seconds = time.perf_counter() - started
+    if solution.x is None:
+        raise ValueError(
+            "Could not construct a leakage-safe four-way grouped split with every class "
+            f"represented in every split within {time_limit_seconds:.1f}s. "
+            f"Optimizer status={solution.status}: {solution.message}. "
+            "Collect more independent groups or revise the predeclared split policy."
+        )
+
+    allocation = solution.x[:binary_variable_count].reshape(group_count, split_count)
+    if not np.allclose(allocation.sum(axis=1), 1.0, atol=1e-5):
+        raise RuntimeError("Group-split optimizer returned an invalid group assignment.")
+    group_assignment = np.argmax(allocation, axis=1)
+    missing_coverage = {
+        str(label): [
+            split_names[split_index]
+            for split_index in range(split_count)
+            if not np.any(
+                group_has_label[:, label_column] & (group_assignment == split_index)
+            )
+        ]
+        for label_column, label in enumerate(unique_labels)
+    }
+    missing_coverage = {
+        label: missing_splits
+        for label, missing_splits in missing_coverage.items()
+        if missing_splits
+    }
+    if missing_coverage:
+        raise RuntimeError(
+            "Group-split optimizer returned a partition with missing classes: "
+            + json.dumps(missing_coverage, ensure_ascii=False)
+        )
+
+    row_assignment = group_assignment[group_inverse]
+    partition_indices = [
+        indices[row_assignment == split_index]
+        for split_index in range(split_count)
+    ]
+    actual_rows = {
+        split_names[split_index]: int(len(partition_indices[split_index]))
+        for split_index in range(split_count)
+    }
+    actual_groups = {
+        split_names[split_index]: int(np.sum(group_assignment == split_index))
+        for split_index in range(split_count)
+    }
+    actual_fractions = {
+        name: actual_rows[name] / total_rows for name in split_names
+    }
+    status_names = {
+        0: "optimal",
+        1: "feasible_incumbent_at_time_limit",
+        2: "infeasible",
+        3: "unbounded",
+        4: "solver_error",
+    }
+    metadata = {
+        "solver": "scipy.optimize.milp (HiGHS)",
+        "solver_status": status_names.get(int(solution.status), f"status_{solution.status}"),
+        "solver_message": str(solution.message),
+        "objective_value": (
+            float(solution.fun) if solution.fun is not None else None
+        ),
+        "time_limit_seconds": float(time_limit_seconds),
+        "solve_seconds": round(solve_seconds, 4),
+        "random_seed_used": False,
+        "hard_constraints": [
+            "each worker/near-duplicate group assigned to exactly one split",
+            "every effective training label represented in train, validation, acceptance_gate and test",
+        ],
+        "target_fractions": {
+            split_names[index]: float(fractions[index]) for index in range(split_count)
+        },
+        "actual_rows": actual_rows,
+        "actual_fractions": actual_fractions,
+        "groups_by_split": actual_groups,
+        "classes_by_split": {
+            split_names[index]: label_count for index in range(split_count)
+        },
+    }
+    return (
+        partition_indices[0],
+        partition_indices[1],
+        partition_indices[2],
+        partition_indices[3],
+        metadata,
+    )
 
 
 def _merge_group_ids(
@@ -353,6 +556,7 @@ def split_records(
 
     near_duplicate_grouping_used = duplicate_report.get("status") == "completed"
     group_split_used = near_duplicate_grouping_used or has_external_groups
+    group_split_optimizer_metadata = None
     if group_split_used:
         too_few = {label: count for label, count in group_counts_by_class.items() if count < 5}
         if too_few:
@@ -362,34 +566,22 @@ def split_records(
                 "Collect more examples or review/adjust the near-duplicate threshold."
             )
 
-        remaining = indices.copy()
-
-        def take_group_holdout(current: np.ndarray, target_fraction: float, split_seed: int,
-                               max_splits: int = 5) -> tuple[np.ndarray, np.ndarray]:
-            current_labels = labels[current]
-            current_groups = groups[current]
-            min_groups = min(
-                len(set(current_groups[current_labels == label].tolist()))
-                for label in set(current_labels.tolist())
-            )
-            n_splits = min(max_splits, min_groups)
-            if n_splits < 2:
-                raise ValueError("Too few remaining near-duplicate groups for a separate validation/gate/test split")
-            return _choose_group_split(
-                current, current_labels, current_groups, n_splits=n_splits,
-                target_fraction=target_fraction, seed=split_seed,
-            )
-
-        remaining, test_idx = take_group_holdout(remaining, test_size, seed)
-        remaining_fraction = len(remaining) / len(indices)
-        remaining, gate_idx = take_group_holdout(
-            remaining, gate_size / max(remaining_fraction, 1e-9), seed + 1
+        train_fraction = 1.0 - test_size - validation_size - gate_size
+        (
+            train_idx,
+            val_idx,
+            gate_idx,
+            test_idx,
+            group_split_optimizer_metadata,
+        ) = _choose_four_way_group_split(
+            indices,
+            labels,
+            groups,
+            train_fraction=train_fraction,
+            validation_fraction=validation_size,
+            gate_fraction=gate_size,
+            test_fraction=test_size,
         )
-        remaining_fraction = len(remaining) / len(indices)
-        remaining, val_idx = take_group_holdout(
-            remaining, validation_size / max(remaining_fraction, 1e-9), seed + 2
-        )
-        train_idx = remaining
     else:
         # Explicit fallback: exact duplicates were removed globally; near-duplicate
         # and domain-specific leakage guarantees are unavailable above the size cap.
@@ -427,14 +619,16 @@ def split_records(
     report["near_duplicate_audit"] = duplicate_report
     report["group_counts_by_class"] = group_counts_by_class
     if has_external_groups and near_duplicate_grouping_used:
-        split_method = "stratified_group_kfold_with_group_column_and_near_duplicates"
+        split_method = "milp_group_assignment_with_group_column_and_near_duplicates"
     elif has_external_groups:
-        split_method = "stratified_group_kfold_with_group_column_near_duplicate_audit_skipped"
+        split_method = "milp_group_assignment_with_group_column_near_duplicate_audit_skipped"
     elif near_duplicate_grouping_used:
-        split_method = "stratified_group_kfold"
+        split_method = "milp_group_assignment_with_near_duplicate_groups"
     else:
         split_method = "stratified_exact_dedup_fallback"
     report["split_method"] = split_method
+    if group_split_optimizer_metadata is not None:
+        report["group_split_optimizer"] = group_split_optimizer_metadata
     report["group_column_used"] = initial_report.get("group_column")
     report["split_purpose"] = {
         "train": "fit model parameters",

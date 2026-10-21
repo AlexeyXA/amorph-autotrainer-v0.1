@@ -71,8 +71,14 @@ def test_group_column_prevents_group_leakage_across_all_four_splits(tmp_path):
     for i in range(len(split_groups)):
         for j in range(i + 1, len(split_groups)):
             assert not split_groups[i] & split_groups[j]
-    assert bundle.report["split_method"] == "stratified_group_kfold_with_group_column_and_near_duplicates"
+    effective_labels = set(bundle.train_labels.tolist())
+    for split_labels in (
+        bundle.train_labels, bundle.val_labels, bundle.gate_labels, bundle.test_labels,
+    ):
+        assert set(split_labels.tolist()) == effective_labels
+    assert bundle.report["split_method"] == "milp_group_assignment_with_group_column_and_near_duplicates"
     assert bundle.report["group_column_used"] == "account"
+    assert bundle.report["group_split_optimizer"]["solver"] == "scipy.optimize.milp (HiGHS)"
 
 
 def test_group_column_requires_a_value_for_each_nonempty_record(tmp_path):
