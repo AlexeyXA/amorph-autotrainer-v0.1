@@ -77,6 +77,8 @@ def gate_candidate(
     reasons: list[str] = []
     if min_macro_f1 is not None and candidate_metrics["macro_f1"] < min_macro_f1:
         reasons.append("candidate_below_min_macro_f1")
+    # A candidate is accepted as non-inferior only if the lower paired-bootstrap
+    # confidence bound is above -margin. This is not proof of universal equivalence.
     if comparison["ci_lower"] < -noninferiority_margin:
         reasons.append("noninferiority_not_established")
     return {
