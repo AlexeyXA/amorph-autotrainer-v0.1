@@ -43,7 +43,7 @@ def test_end_to_end_tfidf_only(tmp_path):
     assert report["status"] in {"accepted", "target_not_met", "baseline_kept_candidate_rejected", "selected_no_absolute_target", "acceptance_gate_underpowered"}
     assert "acceptance_gate_sufficient" in report
     data_report = json.loads((Path(result["run_dir"]) / "data_report.json").read_text(encoding="utf-8"))
-    assert data_report["split_method"] == "stratified_group_kfold"
+    assert data_report["split_method"] == "milp_group_assignment_with_near_duplicate_groups"
     assert (Path(result["run_dir"]) / "selected_features" / "train.npz").is_file()
 
     loaded = load_strategy_model(result["model_path"])
