@@ -49,11 +49,17 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--max-runtime-seconds", type=float, default=7200)
     train.add_argument("--max-candidates", type=int, default=3)
     train.add_argument("--expected-queries", type=int, default=1000)
-    train.add_argument("--compute-eur-per-hour", type=float, default=0.0)
+    train.add_argument("--compute-eur-per-hour", "--eur-per-hour-compute", dest="compute_eur_per_hour", type=float, default=0.0,
+                       help="Compute cost rate; zero means assumed-free compute")
     train.add_argument("--fixed-data-cost-eur", type=float, default=0.0)
     train.add_argument("--maintenance-cost-eur", type=float, default=0.0)
     train.add_argument("--human-hours", type=float, default=0.0)
-    train.add_argument("--human-eur-per-hour", type=float, default=0.0)
+    train.add_argument("--human-eur-per-hour", "--eur-per-human-hour", dest="human_eur_per_hour", type=float, default=0.0,
+                       help="Human labor cost rate; zero means assumed-free labor")
+    train.add_argument("--e5-classifier-c", type=float, default=1.0,
+                       help="E5 LogisticRegression C; default preserves current C=1.0")
+    train.add_argument("--e5-class-weight", choices=("none", "balanced"), default="none",
+                       help="E5 LogisticRegression class weight for a controlled A/B experiment")
     train.add_argument("--min-macro-f1", type=float, default=None)
     train.add_argument("--noninferiority-margin", type=float, default=0.01)
     train.add_argument("--bootstrap-samples", type=int, default=500)
@@ -137,6 +143,8 @@ def main(argv: list[str] | None = None) -> int:
                 export_features=args.export_features,
                 e5_model_id=args.e5_model_id,
                 e5_model_revision=args.e5_model_revision,
+                e5_classifier_c=args.e5_classifier_c,
+                e5_class_weight=None if args.e5_class_weight == "none" else args.e5_class_weight,
                 near_duplicate_threshold=args.near_duplicate_threshold,
                 max_near_duplicate_audit_rows=args.max_near_duplicate_audit_rows,
             )
