@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "profile_id": "massive-ru-e5-c01-balanced",
+  "status": "experimental_candidate",
+  "scope": {
+    "dataset_id": "AmazonScience/massive",
+    "locale": "ru-RU",
+    "dataset_revision": "c4aa61e89895160619e18a94de72f19b99e72ca2",
+    "claim": "Strong candidate for this pinned MASSIVE ru-RU benchmark; no universal AMORPH recommendation."
+  },
+  "defaults_on_main": {
+    "unchanged": true,
+    "e5_classifier_C": 1,
+    "e5_class_weight": null
+  },
+  "strategy": {
+    "name": "e5",
+    "model_id": "intfloat/multilingual-e5-small",
+    "model_revision": "614241f622f53c4eeff9890bdc4f31cfecc418b3",
+    "classifier": "sklearn.linear_model.LogisticRegression",
+    "classifier_C": 0.1,
+    "class_weight": "balanced",
+    "max_iter": 1000
+  },
+  "reproduce_command": "python scripts/benchmark_massive_ru.py --with-e5 --output-dir benchmark_runs/massive_ru_e5_c01_balanced --max-runtime-seconds 7200 --e5-classifier-c 0.1 --e5-class-weight balanced",
+  "evidence": {
+    "control_run_id": 39743323483,
+    "control_run_url": "https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/39743323483",
+    "variant_run_id": 39743872366,
+    "variant_run_url": "https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/39743872366",
+    "variant_workflow_branch_head_sha": "bd1cb64595e8bf90f666316809adac00908bc914",
+    "variant_manifest_source_commit": "a8b0e8a21f11a7998585355483d7260dbd90a0c9",
+    "main_base_commit_at_experiment": "4bbd3d3899a4dacf7a78eb47b9a940b89519af55",
+    "package_source_tree_sha256": "924aa8e25847eaacabb6674ae96d41b81ae4825f7e60d6b23dce2ee367154f96",
+    "variant_artifact": {
+      "id": 12410736231,
+      "name": "amorph-massive-ru-39743872366-1",
+      "sha256": "99f5ce649a52c64ba1586325dea229dab04f595777e00b3a5102d665a3633eac",
+      "inventory_files": 18,
+      "inventory_hash_mismatches": 0
+    },
+    "prepared_train_csv": {
+      "rows": 11387,
+      "sha256": "1ead2c4667897fe1afda03b241814e8765eb256524664f3384eb3fc3b15323f0"
+    },
+    "prepared_official_test_csv": {
+      "rows": 2974,
+      "sha256": "aaa90bd680ce470167e75b58520c1def0d8f8353deb86ae368a871653e27bdd4"
+    },
+    "internal_split_rows": {
+      "train": 4917,
+      "validation": 1639,
+      "acceptance_gate": 2731,
+      "internal_test": 1639
+    },
+    "validation_macro_f1": {
+      "tfidf": 0.45039793808589274,
+      "e5_control": 0.27411929090552667,
+      "e5_candidate": 0.5900384714283741
+    },
+    "acceptance_gate": {
+      "passed": true,
+      "candidate_macro_f1": 0.6347710446222435,
+      "baseline_tfidf_macro_f1": 0.43369903156325545,
+      "delta_macro_f1_mean": 0.202630460798474,
+      "ci95_lower": 0.1793107931641523,
+      "ci95_upper": 0.22379116528127627,
+      "bootstrap_samples": 500,
+      "status": "accepted_no_absolute_target"
+    },
+    "official_test_report_only": {
+      "tfidf": {
+        "accuracy": 0.6217215870880969,
+        "macro_f1": 0.44781037012196895,
+        "balanced_accuracy": 0.43293287570541805,
+        "macro_f1_fixed_training_label_universe_56": 0.47180021137850303,
+        "balanced_accuracy_fixed_training_label_universe_56": 0.45612570833249405
+      },
+      "e5_control": {
+        "accuracy": 0.5319435104236718,
+        "macro_f1": 0.28515140387523374,
+        "balanced_accuracy": 0.30108780791028017,
+        "macro_f1_fixed_training_label_universe_56": 0.3004273719399785,
+        "balanced_accuracy_fixed_training_label_universe_56": 0.31721751190547376
+      },
+      "e5_candidate": {
+        "accuracy": 0.660053799596503,
+        "macro_f1": 0.5928879841046422,
+        "balanced_accuracy": 0.6859747393841622,
+        "macro_f1_fixed_training_label_universe_56": 0.6246498403959623,
+        "balanced_accuracy_fixed_training_label_universe_56": 0.7227233861368854
+      }
+    }
+  },
+  "limitations": [
+    "C and class_weight were changed together; individual causal effects were not isolated.",
+    "Single predeclared split/seed; bootstrap conditional on fitted models and does not measure retraining variance.",
+    "Near-duplicate audit skipped above 5,000 rows; worker grouping does not prove cross-worker duplicates absent.",
+    "Official test metrics are report-only and have already been inspected for this profile.",
+    "This evidence is task-specific and does not justify a universal AMORPH default change.",
+    "Selector objective remains a runtime proxy, not monetary TCO."
+  ]
+}
