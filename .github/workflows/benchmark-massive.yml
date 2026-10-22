@@ -1,3 +1,4 @@
+# Experimental only: PR runs the tuned E5 candidate against the current PR merge ref; keep this PR draft and do not merge.
 name: MASSIVE ru-RU benchmark
 
 on:
