@@ -14,6 +14,7 @@ For the optional E5 route, also run:
 Run:
   python scripts/benchmark_massive_ru.py --output-dir benchmark_runs/massive_ru
   python scripts/benchmark_massive_ru.py --with-e5 --output-dir benchmark_runs/massive_ru_e5
+  python scripts/benchmark_massive_ru.py --with-e5 --with-hybrid     --e5-classifier-c 0.1 --e5-class-weight balanced     --hybrid-classifier-c 1.0 --hybrid-class-weight none     --output-dir benchmark_runs/massive_ru_hybrid_e5
 """
 from __future__ import annotations
 
@@ -70,10 +71,21 @@ def load_frame(path: Path):
     return pd.read_parquet(path)
 
 
+def requested_strategies(with_e5: bool, with_hybrid: bool) -> list[str]:
+    """Return a stable candidate order; TF-IDF remains the mandatory reference."""
+    strategies = ["tfidf"]
+    if with_e5:
+        strategies.append("e5")
+    if with_hybrid:
+        strategies.append("hybrid_tfidf_e5")
+    return strategies
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", default="benchmark_runs/massive_ru")
     parser.add_argument("--with-e5", action="store_true", help="Also train/evaluate multilingual-e5-small embeddings + logistic regression; downloads model weights.")
+    parser.add_argument("--with-hybrid", action="store_true", help="Also train/evaluate experimental TF-IDF + normalized E5 hybrid features; downloads model weights.")
     parser.add_argument("--max-runtime-seconds", type=float, default=7200.0)
     parser.add_argument("--expected-queries", type=int, default=1000)
     parser.add_argument("--compute-eur-per-hour", type=float, default=0.0)
@@ -83,6 +95,10 @@ def main() -> int:
                         help="E5 LogisticRegression C (default is current C=1.0)")
     parser.add_argument("--e5-class-weight", choices=("none", "balanced"), default="none",
                         help="E5 LogisticRegression class weight for a controlled A/B experiment")
+    parser.add_argument("--hybrid-classifier-c", type=float, default=1.0,
+                        help="Hybrid TF-IDF+E5 LogisticRegression C")
+    parser.add_argument("--hybrid-class-weight", choices=("none", "balanced"), default="none",
+                        help="Hybrid TF-IDF+E5 LogisticRegression class weight")
     args = parser.parse_args()
 
     out = Path(args.output_dir).resolve()
@@ -297,11 +313,11 @@ def main() -> int:
     from amorph_autotrainer.cost import CostConfig
     from amorph_autotrainer.metrics import classification_metrics
     from amorph_autotrainer.pipeline import run_training
-    from amorph_autotrainer.strategies import E5Candidate
+    from amorph_autotrainer.strategies import E5Candidate, HybridTfidfE5Candidate
     import joblib
     import numpy as np
 
-    strategies = ["tfidf", "e5"] if args.with_e5 else ["tfidf"]
+    strategies = requested_strategies(args.with_e5, args.with_hybrid)
     cost_config = CostConfig(
         max_runtime_seconds=args.max_runtime_seconds,
         max_candidates=len(strategies),
@@ -325,6 +341,8 @@ def main() -> int:
         e5_model_revision=E5_MODEL_REVISION,
         e5_classifier_c=args.e5_classifier_c,
         e5_class_weight=None if args.e5_class_weight == "none" else args.e5_class_weight,
+        hybrid_classifier_c=args.hybrid_classifier_c,
+        hybrid_class_weight=None if args.hybrid_class_weight == "none" else args.hybrid_class_weight,
     )
 
     test_texts = test_frame["utt"].tolist()
@@ -387,16 +405,49 @@ def main() -> int:
         "tfidf": external_classification_metrics(test_labels, tfidf_predictions),
     }
 
+    # Share one in-memory encoder across E5 and hybrid evaluation: the model ID/revision
+    # are pinned above, and loading duplicate copies wastes memory on CPU-only runners.
+    encoder_cache: dict[tuple[str, str], Any] = {}
+
+    def load_cached_encoder(model_id: str, model_revision: str | None):
+        revision = model_revision or E5_MODEL_REVISION
+        key = (model_id, revision)
+        if key not in encoder_cache:
+            encoder_cache[key] = E5Candidate._load_encoder(model_id, revision)
+        return encoder_cache[key]
+
     if args.with_e5 and (run_dir / "candidates" / "e5" / "classifier.joblib").is_file():
         e5_dir = run_dir / "candidates" / "e5"
         e5_metadata = json.loads((e5_dir / "strategy.json").read_text(encoding="utf-8"))
-        encoder = E5Candidate._load_encoder(
-            e5_metadata["model_id"], e5_metadata.get("model_revision", E5_MODEL_REVISION)
+        encoder = load_cached_encoder(
+            e5_metadata.get("model_id", E5_MODEL_ID),
+            e5_metadata.get("model_revision", E5_MODEL_REVISION),
         )
         classifier = joblib.load(e5_dir / "classifier.joblib")
         e5_features = E5Candidate._encode(encoder, test_texts)
         external_metrics["e5"] = external_classification_metrics(
             test_labels, classifier.predict(e5_features)
+        )
+
+    hybrid_dir = run_dir / "candidates" / "hybrid_tfidf_e5"
+    if args.with_hybrid and (hybrid_dir / "classifier.joblib").is_file():
+        hybrid_metadata = json.loads((hybrid_dir / "strategy.json").read_text(encoding="utf-8"))
+        encoder = load_cached_encoder(
+            hybrid_metadata.get("model_id", E5_MODEL_ID),
+            hybrid_metadata.get("model_revision", E5_MODEL_REVISION),
+        )
+        hybrid_model = {
+            "classifier": joblib.load(hybrid_dir / "classifier.joblib"),
+            "tfidf_features": joblib.load(hybrid_dir / "tfidf_features.joblib"),
+            "encoder": encoder,
+            "model_id": hybrid_metadata.get("model_id", E5_MODEL_ID),
+            "model_revision": hybrid_metadata.get("model_revision", E5_MODEL_REVISION),
+            "classifier_c": hybrid_metadata.get("classifier_C", args.hybrid_classifier_c),
+            "class_weight": hybrid_metadata.get("classifier_class_weight"),
+        }
+        hybrid_predictions = HybridTfidfE5Candidate.predict(hybrid_model, test_texts)
+        external_metrics["hybrid_tfidf_e5"] = external_classification_metrics(
+            test_labels, hybrid_predictions
         )
 
     benchmark_result = {
@@ -406,7 +457,21 @@ def main() -> int:
         "dataset_provenance_file": str(out / "dataset_provenance.json"),
         "internal_amorph_run": result,
         "selected_strategy": result["selected_strategy"],
-        "e5_classifier_config": {"C": args.e5_classifier_c, "class_weight": None if args.e5_class_weight == "none" else args.e5_class_weight, "model_revision": E5_MODEL_REVISION},
+        "requested_strategies": strategies,
+        "e5_classifier_config": {
+            "enabled": args.with_e5,
+            "C": args.e5_classifier_c,
+            "class_weight": None if args.e5_class_weight == "none" else args.e5_class_weight,
+            "model_revision": E5_MODEL_REVISION,
+        },
+        "hybrid_classifier_config": {
+            "enabled": args.with_hybrid,
+            "C": args.hybrid_classifier_c,
+            "class_weight": None if args.hybrid_class_weight == "none" else args.hybrid_class_weight,
+            "model_revision": E5_MODEL_REVISION,
+            "fusion": "sparse_horizontal_concatenation",
+            "tfidf_global_scale": 1 / (2 ** 0.5),
+        },
         "per_class_metrics_protocol": {
             "scope": "official_test_report_only",
             "label_universe": "union of eligible official-training labels, official-test labels, and predicted labels",
@@ -416,7 +481,7 @@ def main() -> int:
         },
         "external_test_metrics_by_strategy": external_metrics,
         "selected_strategy_official_test_metrics": external_metrics.get(result["selected_strategy"]),
-        "conclusion": "Official-test metrics are report-only and are calculated after internal selection. Interpret this as a task-specific classification benchmark; do not infer competitiveness against RAG, LLM fine-tuning, or other task families.",
+        "conclusion": "Official-test metrics are retrospective report-only and do not feed internal selection or gate decisions. The official test has previously been inspected for TF-IDF/E5 variants; do not tune further configurations based on these results or claim this is an untouched final holdout. Interpret this only as a task-specific classification benchmark, not as competitiveness against RAG, LLM fine-tuning, or other task families.",
     }
     write_json(out / "benchmark_result.json", benchmark_result)
     print(json.dumps({
@@ -429,7 +494,9 @@ def main() -> int:
         "official_test_labels_without_training_support": test_labels_without_training_support,
         "official_test_label_coverage_fraction": provenance["official_test_label_coverage_fraction"],
         "selected_strategy": result["selected_strategy"],
-        "e5_classifier_config": {"C": args.e5_classifier_c, "class_weight": None if args.e5_class_weight == "none" else args.e5_class_weight},
+        "requested_strategies": strategies,
+        "e5_classifier_config": {"enabled": args.with_e5, "C": args.e5_classifier_c, "class_weight": None if args.e5_class_weight == "none" else args.e5_class_weight},
+        "hybrid_classifier_config": {"enabled": args.with_hybrid, "C": args.hybrid_classifier_c, "class_weight": None if args.hybrid_class_weight == "none" else args.hybrid_class_weight},
         "external_test_metrics_by_strategy": external_metrics,
         "provenance_file": str(out / "dataset_provenance.json"),
         "result_file": str(out / "benchmark_result.json"),
