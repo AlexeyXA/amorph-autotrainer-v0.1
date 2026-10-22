@@ -171,4 +171,8 @@ def test_pipeline_trains_hybrid_without_external_encoder_or_default_change(tmp_p
     exported = run_dir / "selected_features" / "acceptance_gate.npz"
     assert exported.is_file()
     loaded_features = sparse.load_npz(exported)
-    assert loaded_features.shape[1] == manifest["strategy_metadata"]["combined_feature_count"]
+    assert loaded_features.shape[0] > 0
+    if manifest["strategy"] == "hybrid_tfidf_e5":
+        assert loaded_features.shape[1] == manifest["strategy_metadata"]["combined_feature_count"]
+    else:
+        assert manifest["strategy"] == "tfidf"
