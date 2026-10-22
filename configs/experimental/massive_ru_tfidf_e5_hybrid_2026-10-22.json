@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "profile_id": "massive-ru-tfidf-e5-hybrid-2026-10-22",
+  "status": "experimental_predeclared_candidate",
+  "scope": {
+    "dataset_id": "AmazonScience/massive",
+    "locale": "ru-RU",
+    "dataset_revision": "c4aa61e89895160619e18a94de72f19b99e72ca2",
+    "e5_model_id": "intfloat/multilingual-e5-small",
+    "e5_model_revision": "614241f622f53c4eeff9890bdc4f31cfecc418b3",
+    "claim": "One predeclared comparison for the pinned MASSIVE Russian intent-classification task; no universal AMORPH recommendation."
+  },
+  "defaults_on_main": {
+    "unchanged": true,
+    "tfidf_remains_reference_and_default": true,
+    "e5_classifier_C": 1.0,
+    "e5_class_weight": null,
+    "hybrid_enabled_by_default": false
+  },
+  "requested_strategies": [
+    "tfidf",
+    "e5",
+    "hybrid_tfidf_e5"
+  ],
+  "predeclared_classifier_config": {
+    "e5": {
+      "classifier": "sklearn.linear_model.LogisticRegression",
+      "C": 0.1,
+      "class_weight": "balanced",
+      "max_iter": 1000,
+      "reason": "Previously recorded validation/gate-qualified experimental candidate; its setting is fixed before this hybrid run."
+    },
+    "hybrid_tfidf_e5": {
+      "classifier": "sklearn.linear_model.LogisticRegression",
+      "C": 1.0,
+      "class_weight": null,
+      "max_iter": 1000,
+      "fusion": "sparse_horizontal_concatenation",
+      "tfidf_global_scale": 0.7071067811865475,
+      "reason": "Initial un-tuned hybrid configuration; no official-test-derived hyperparameter changes."
+    }
+  },
+  "selection_protocol": {
+    "selector": "internal validation only; existing runtime proxy objective is not monetary TCO",
+    "quality_gate": "separate internal acceptance-gate split; final official test does not participate",
+    "seed": 42,
+    "bootstrap_samples": 500,
+    "min_gate_examples_per_class": 5,
+    "group_column": "worker_id"
+  },
+  "official_test_policy": {
+    "role": "report_only",
+    "previously_inspected_for_tfidf_and_e5": true,
+    "untouched_final_holdout_claim_allowed": false,
+    "policy": "Do not use official-test results to tune or choose among configurations. Treat hybrid official-test metrics as retrospective report-only; any follow-up tuning must be justified by internal validation/gate or evaluated on a newly reserved external holdout."
+  }
+}

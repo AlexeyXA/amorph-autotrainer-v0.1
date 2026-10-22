@@ -1,0 +1,141 @@
+name: MASSIVE ru-RU hybrid experiment
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/benchmark_massive_ru.py"
+      - "amorph_autotrainer/strategies.py"
+      - "amorph_autotrainer/pipeline.py"
+      - "configs/experimental/massive_ru_tfidf_e5_hybrid_2026-10-22.json"
+      - ".github/workflows/benchmark-hybrid-experiment.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  massive-hybrid-experiment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout pinned source revision
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install package and benchmark dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.0"
+          python -m pip install -e ".[test,embeddings]" pandas pyarrow huggingface_hub
+      - name: Record start time
+        id: clock
+        run: |
+          echo "started_epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
+          echo "started_utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+      - name: Run predeclared MASSIVE ru-RU comparison
+        run: |
+          python scripts/benchmark_massive_ru.py \
+            --with-e5 \
+            --with-hybrid \
+            --output-dir benchmark_runs/massive_ru_hybrid_e5 \
+            --max-runtime-seconds 7200 \
+            --e5-classifier-c 0.1 \
+            --e5-class-weight balanced \
+            --hybrid-classifier-c 1.0 \
+            --hybrid-class-weight none
+      - name: Record execution manifest and summary
+        if: always()
+        env:
+          BENCHMARK_STARTED_EPOCH: ${{ steps.clock.outputs.started_epoch }}
+          BENCHMARK_STARTED_UTC: ${{ steps.clock.outputs.started_utc }}
+          SOURCE_COMMIT: ${{ github.sha }}
+          ACTIONS_RUN_ID: ${{ github.run_id }}
+          ACTIONS_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import platform
+          import time
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          out = Path("benchmark_runs/massive_ru_hybrid_e5")
+          out.mkdir(parents=True, exist_ok=True)
+          started_raw = os.environ.get("BENCHMARK_STARTED_EPOCH", "")
+          started = int(started_raw) if started_raw else int(time.time())
+          ended = int(time.time())
+          inventory = []
+          for path in sorted(out.rglob("*")):
+              if not path.is_file() or path.name == "execution_manifest.json":
+                  continue
+              if "hf_cache" in path.parts:
+                  continue
+              digest = hashlib.sha256()
+              with path.open("rb") as handle:
+                  for block in iter(lambda: handle.read(1024 * 1024), b""):
+                      digest.update(block)
+              inventory.append({
+                  "path": str(path),
+                  "size_bytes": path.stat().st_size,
+                  "sha256": digest.hexdigest(),
+              })
+          provenance_path = out / "dataset_provenance.json"
+          result_path = out / "benchmark_result.json"
+          provenance = json.loads(provenance_path.read_text(encoding="utf-8")) if provenance_path.is_file() else {}
+          result = json.loads(result_path.read_text(encoding="utf-8")) if result_path.is_file() else {}
+          manifest = {
+              "status": "result_written" if result_path.is_file() else "incomplete_or_failed",
+              "source_commit": os.environ.get("SOURCE_COMMIT"),
+              "workflow_run_id": os.environ.get("ACTIONS_RUN_ID"),
+              "workflow_run_attempt": os.environ.get("ACTIONS_RUN_ATTEMPT"),
+              "command": "python scripts/benchmark_massive_ru.py --with-e5 --with-hybrid --output-dir benchmark_runs/massive_ru_hybrid_e5 --max-runtime-seconds 7200 --e5-classifier-c 0.1 --e5-class-weight balanced --hybrid-classifier-c 1.0 --hybrid-class-weight none",
+              "started_at_utc": os.environ.get("BENCHMARK_STARTED_UTC"),
+              "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+              "elapsed_seconds": max(0, ended - started),
+              "python_version": platform.python_version(),
+              "dataset_id": provenance.get("dataset_id", "AmazonScience/massive"),
+              "dataset_revision": provenance.get("dataset_revision", "c4aa61e89895160619e18a94de72f19b99e72ca2"),
+              "requested_strategies": result.get("requested_strategies"),
+              "selected_strategy": result.get("selected_strategy"),
+              "e5_classifier_config": result.get("e5_classifier_config"),
+              "hybrid_classifier_config": result.get("hybrid_classifier_config"),
+              "internal_validation_metrics": result.get("internal_amorph_run", {}).get("validation_metrics"),
+              "acceptance_gate_comparison": result.get("internal_amorph_run", {}).get("acceptance_gate_comparison"),
+              "external_test_metrics_by_strategy": result.get("external_test_metrics_by_strategy"),
+              "file_inventory_sha256": inventory,
+          }
+          (out / "execution_manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as handle:
+              handle.write("# AMORPH MASSIVE ru-RU hybrid experiment\n\n")
+              handle.write("- Status: " + manifest["status"] + "\n")
+              handle.write("- Source commit: " + str(manifest["source_commit"]) + "\n")
+              handle.write("- Dataset revision: " + str(manifest["dataset_revision"]) + "\n")
+              handle.write("- Elapsed seconds: " + str(manifest["elapsed_seconds"]) + "\n")
+              handle.write("- Requested strategies: " + str(manifest["requested_strategies"]) + "\n")
+              handle.write("- Selected strategy: " + str(manifest["selected_strategy"]) + "\n")
+              handle.write("- Official test: retrospective report-only; not used for selection/gating\n\n")
+              metrics = manifest.get("external_test_metrics_by_strategy") or {}
+              for name, values in metrics.items():
+                  handle.write(f"- {name}: Macro-F1={values.get('macro_f1')}; Accuracy={values.get('accuracy')}; Balanced accuracy={values.get('balanced_accuracy')}\n")
+              if not result:
+                  handle.write("\nNo complete benchmark_result.json was produced. Inspect the failed step logs.\n")
+          PY
+      - name: Upload benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: amorph-massive-ru-hybrid-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            benchmark_runs/massive_ru_hybrid_e5/dataset_provenance.json
+            benchmark_runs/massive_ru_hybrid_e5/benchmark_result.json
+            benchmark_runs/massive_ru_hybrid_e5/execution_manifest.json
+            benchmark_runs/massive_ru_hybrid_e5/data/*.csv
+            benchmark_runs/massive_ru_hybrid_e5/runs/**
+          if-no-files-found: warn
+          retention-days: 30
