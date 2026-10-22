@@ -34,8 +34,8 @@ def test_end_to_end_tfidf_only(tmp_path):
     assert "python_version" in manifest
     assert "numpy" in manifest["library_versions"]
     assert "scikit-learn" in manifest["library_versions"]
-    assert "commit_sha" in manifest  # may be null outside a Git checkout
-    assert len(manifest["source_tree_sha256"]) == 64  # always present even without .git
+    assert "commit_sha" in manifest
+    assert len(manifest["source_tree_sha256"]) == 64
     assert "near_duplicate_threshold" in manifest["config"]
     assert "max_near_duplicate_audit_rows" in manifest["config"]
     assert manifest["split_config"]["random_seed"] == 42
@@ -55,14 +55,10 @@ def test_end_to_end_tfidf_only(tmp_path):
     loaded = load_strategy_model(result["model_path"])
     pred = predict_loaded(loaded, ["Команда выиграла матч и вышла в финал турнира"])
     assert len(pred) == 1
-
-    # SQLite registry is part of the MVP acceptance criteria.
     assert Path(result["database_path"]).is_file()
 
 
 def test_cli_exit_code_4_when_acceptance_gate_is_underpowered(tmp_path, capsys):
-    # 12 examples/class with default ~25% gate is often enough for floor=5; request a
-    # deliberately impossible floor so the soft underpowered path is exercised.
     data_path = create_demo_csv(tmp_path / "small.csv", examples_per_class=12)
     output_dir = tmp_path / "runs"
     code = cli_main([
