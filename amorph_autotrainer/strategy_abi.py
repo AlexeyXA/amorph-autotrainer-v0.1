@@ -117,6 +117,10 @@ def run_conformance_checks(
         pred = predict_fn(list(sample_texts))
         if not isinstance(pred, np.ndarray):
             errors.append("predict(sample) must return numpy.ndarray")
+        elif pred.ndim != 1:
+            errors.append(
+                f"predict(sample) must return one-dimensional predictions; got shape={pred.shape}"
+            )
         elif len(pred) != len(sample_texts):
             errors.append(
                 f"predict length mismatch: len(texts)={len(sample_texts)} len(pred)={len(pred)}"
