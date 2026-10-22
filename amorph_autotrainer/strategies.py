@@ -16,7 +16,7 @@ from sklearn.linear_model import LogisticRegression
 from .strategy_abi import ComponentStatus, strategy_fingerprint
 
 
-class DeterministicDeterministicTfidfVectorizer(TfidfVectorizer):
+class DeterministicTfidfVectorizer(TfidfVectorizer):
     """TfidfVectorizer with an explicit tie-break when max_features truncates vocabulary.
 
     sklearn ranks capped features by total term frequency, but equal-frequency
