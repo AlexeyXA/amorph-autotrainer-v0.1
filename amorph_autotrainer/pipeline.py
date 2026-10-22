@@ -109,6 +109,8 @@ def run_training(
     export_features: bool = False,
     e5_model_id: str | None = None,
     e5_model_revision: str | None = E5Candidate.default_model_revision,
+    e5_classifier_c: float = 1.0,
+    e5_class_weight: str | None = None,
     near_duplicate_threshold: float = 0.985,
     max_near_duplicate_audit_rows: int = 5000,
 ) -> dict[str, Any]:
@@ -133,6 +135,8 @@ def run_training(
         "export_features": export_features,
         "e5_model_id": e5_model_id or E5Candidate.model_id,
         "e5_model_revision": e5_model_revision,
+        "e5_classifier_c": e5_classifier_c,
+        "e5_class_weight": e5_class_weight,
         "near_duplicate_threshold": near_duplicate_threshold,
         "max_near_duplicate_audit_rows": max_near_duplicate_audit_rows,
     }, ensure_ascii=False, sort_keys=True)
@@ -176,6 +180,8 @@ def run_training(
                     bundle.train_texts, bundle.train_labels, bundle.val_texts,
                     model_id=e5_model_id,
                     model_revision=e5_model_revision,
+                    classifier_c=e5_classifier_c,
+                    class_weight=e5_class_weight,
                 )
                 strategy_metadata = E5Candidate.save(candidate, candidate_dir)
             else:
@@ -274,6 +280,8 @@ def run_training(
         name for name, met in val_metrics.items()
         if met["macro_f1"] >= threshold
     ]
+    validation_eligible_candidates = list(eligible)
+    validation_eligible_challengers = [name for name in validation_eligible_candidates if name != "tfidf"]
     selection_rule = "cheapest runtime proxy among validation candidates meeting threshold"
     if not eligible:
         # No method meets target: do not hide the failure; keep the best validation candidate
@@ -363,8 +371,12 @@ def run_training(
         final_status = "target_not_met"
     elif selected_name != final_name:
         final_status = "baseline_kept_candidate_rejected"
+    elif final_name == "tfidf" and len(candidates) == 1:
+        final_status = "baseline_only"
+    elif final_name == "tfidf":
+        final_status = "baseline_self_comparison"
     elif absolute_target_passed is None:
-        final_status = "selected_no_absolute_target"
+        final_status = "accepted_no_absolute_target"
     else:
         final_status = "accepted"
 
@@ -399,11 +411,16 @@ def run_training(
         if name == "e5":
             strategy_fingerprints[name] = strategy_class.fingerprint(
                 code_revision=source_tree_sha256,
+                source_commit_sha=commit_sha,
                 model_id=candidate.model.get("model_id"),
                 model_revision=candidate.model.get("model_revision"),
+                classifier_c=float(candidate.model.get("classifier_c", 1.0)),
+                class_weight=candidate.model.get("class_weight"),
             )
         else:
-            strategy_fingerprints[name] = strategy_class.fingerprint(code_revision=source_tree_sha256)
+            strategy_fingerprints[name] = strategy_class.fingerprint(
+                code_revision=source_tree_sha256, source_commit_sha=commit_sha
+            )
 
     protocol_status = {
         "strategy_abi": "implemented",
@@ -434,6 +451,47 @@ def run_training(
         },
     )
     _write_json(root / "replay.json", replay_descriptor)
+    warnings: list[str] = []
+    selected_gate_scope = (
+        "baseline_self_comparison" if selected_name == "tfidf"
+        else "selected_candidate_vs_baseline"
+    )
+    final_gate_scope = (
+        "baseline_self_comparison" if final_name == "tfidf"
+        else "selected_candidate_vs_baseline"
+    )
+    if selected_gate_scope == "baseline_self_comparison":
+        warnings.append(
+            "Acceptance gate compared TF-IDF with itself; a zero delta and CI [0, 0] are tautological and do not demonstrate improvement."
+        )
+        if not validation_eligible_challengers:
+            warnings.append(
+                "No challenger passed the validation threshold; E5 was not compared with TF-IDF by the acceptance gate."
+            )
+        else:
+            warnings.append(
+                "A challenger passed validation but was not selected; this run does not establish that the challenger passes the acceptance gate."
+            )
+    elif final_gate_scope == "baseline_self_comparison" and selected_name != final_name:
+        warnings.append(
+            "The selected challenger was rejected by the gate; the final gate entry records the TF-IDF baseline for rollback, not a second challenger comparison."
+        )
+    split_method = str(bundle.report.get("split_method", ""))
+    if "near_duplicate_audit_skipped" in split_method:
+        warnings.append(
+            "Near-duplicate audit was skipped because the dataset exceeded its configured row limit; group-disjoint splitting does not prove that cross-group near-duplicates are absent."
+        )
+    tco_inputs_assume_zero = (
+        config.compute_eur_per_hour == 0
+        and config.fixed_data_cost_eur == 0
+        and config.maintenance_cost_eur == 0
+        and (config.human_hours == 0 or config.human_eur_per_hour == 0)
+    )
+    if tco_inputs_assume_zero:
+        warnings.append(
+            "TCO uses zero-valued cost inputs and therefore reports assumed-free resources; this is an input assumption, not evidence that operating costs are zero."
+        )
+
     manifest = {
         "format_version": 1,
         "project": "AMORPH AutoTrainer",
@@ -469,6 +527,18 @@ def run_training(
         "candidate_errors": candidate_errors,
         "selected_before_acceptance_gate": selected_name,
         "selection_rule": selection_rule,
+        "validation_eligible_candidates": validation_eligible_candidates,
+        "acceptance_gate_comparison": {
+            "selected_candidate_scope": selected_gate_scope,
+            "final_gate_scope": final_gate_scope,
+            "baseline": "tfidf",
+            "selected_before_gate": selected_name,
+            "final_strategy": final_name,
+            "validation_eligible_challengers": validation_eligible_challengers,
+            "is_self_comparison": final_gate_scope == "baseline_self_comparison",
+        },
+        "tco_assumption_status": "assumed_free_inputs" if tco_inputs_assume_zero else "user_supplied_nonzero_cost_inputs",
+        "warnings": warnings,
         "acceptance_gate_metrics": {
             "baseline": baseline_gate_metrics,
             "candidate": selected_gate_metrics,
@@ -625,6 +695,9 @@ def run_training(
         "acceptance_gate": selected_gate,
         "final_acceptance_gate": final_gate,
         "candidate_errors": candidate_errors,
+        "warnings": warnings,
+        "acceptance_gate_comparison": manifest["acceptance_gate_comparison"],
+        "tco_assumption_status": manifest["tco_assumption_status"],
         "report_path": str(root / "report.json"),
         "manifest_path": str(final_artifact_dir / "manifest.json"),
         "model_path": str(final_artifact_dir),
