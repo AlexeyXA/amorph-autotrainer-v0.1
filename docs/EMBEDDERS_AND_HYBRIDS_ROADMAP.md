@@ -41,7 +41,7 @@ Only strategies with ABI + fingerprint + gate evidence may enter production defa
 | ID | Composition | Fusion | When useful | Infer cost | Priority | Status |
 |----|-------------|--------|-------------|------------|----------|--------|
 | (internal) | word ⊕ char TF–IDF | FeatureUnion | always | very low | — | **implemented** inside `tfidf` |
-| `hybrid_tfidf_e5` | TF–IDF ⊕ E5-small | concat → LogReg | default hybrid | ~sum | **P1** | experimental (not in main yet) |
+| `hybrid_tfidf_e5` | TF–IDF ⊕ E5-small | concat → LogReg | default hybrid | ~sum | **P1** | experimental; implementation present, benchmark pending |
 | `hybrid_tfidf_bge_m3` | TF–IDF ⊕ BGE-M3 | concat → LogReg | if E5 weak on domain | ~sum | **P1** | hypothesis |
 | `hybrid_tfidf_gte_multi` | TF–IDF ⊕ GTE-multilingual | concat → LogReg | alt to BGE/E5 | ~sum | **P1** | hypothesis |
 | `hybrid_tfidf_gte_base` | TF–IDF ⊕ GTE-base | concat | EN-only | ~sum | P2 | hypothesis |
@@ -91,7 +91,7 @@ Each candidate must record:
 
 Ordered, small PRs:
 
-1. **Optional:** `hybrid_tfidf_e5` (concat) as third strategy — ABI + fingerprint + tests; no default change.
+1. **Measure** `hybrid_tfidf_e5` on a fixed benchmark protocol (validation + separate acceptance gate; final test report-only) before claiming quality gains; no default change.
 2. **Optional A/B:** one of `bge_m3` or `gte_multilingual_base` with pinned revision, same linear-probe pattern as E5.
 3. **Optional:** `cascade_tfidf_*` only after hybrid evidence; measure fraction routed to dense.
 4. **Do not:** implement full embedder zoo in one PR.

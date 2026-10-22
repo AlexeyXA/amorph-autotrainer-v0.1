@@ -42,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional CSV column identifying a user/source/project; rows sharing a value stay in one split",
     )
     train.add_argument("--out", default="runs")
-    train.add_argument("--strategies", default="tfidf", help="Comma-separated: tfidf,e5; tfidf is always required")
+    train.add_argument("--strategies", default="tfidf", help="Comma-separated: tfidf,e5,hybrid_tfidf_e5; tfidf is always required")
     train.add_argument("--e5-model-id", default=E5Candidate.model_id)
     train.add_argument("--e5-model-revision", default=E5Candidate.default_model_revision,
                        help="Pinned Hugging Face model revision (commit SHA); pass 'main' only to opt into a mutable branch")
@@ -60,6 +60,10 @@ def build_parser() -> argparse.ArgumentParser:
                        help="E5 LogisticRegression C; default preserves current C=1.0")
     train.add_argument("--e5-class-weight", choices=("none", "balanced"), default="none",
                        help="E5 LogisticRegression class weight for a controlled A/B experiment")
+    train.add_argument("--hybrid-classifier-c", type=float, default=1.0,
+                       help="Hybrid TF-IDF+E5 LogisticRegression C (experimental strategy only)")
+    train.add_argument("--hybrid-class-weight", choices=("none", "balanced"), default="none",
+                       help="Hybrid TF-IDF+E5 LogisticRegression class weight")
     train.add_argument("--min-macro-f1", type=float, default=None)
     train.add_argument("--noninferiority-margin", type=float, default=0.01)
     train.add_argument("--bootstrap-samples", type=int, default=500)
@@ -145,6 +149,8 @@ def main(argv: list[str] | None = None) -> int:
                 e5_model_revision=args.e5_model_revision,
                 e5_classifier_c=args.e5_classifier_c,
                 e5_class_weight=None if args.e5_class_weight == "none" else args.e5_class_weight,
+                hybrid_classifier_c=args.hybrid_classifier_c,
+                hybrid_class_weight=None if args.hybrid_class_weight == "none" else args.hybrid_class_weight,
                 near_duplicate_threshold=args.near_duplicate_threshold,
                 max_near_duplicate_audit_rows=args.max_near_duplicate_audit_rows,
             )

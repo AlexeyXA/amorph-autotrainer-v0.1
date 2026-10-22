@@ -9,6 +9,7 @@ from typing import Any
 
 import joblib
 import numpy as np
+from scipy import sparse
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.pipeline import FeatureUnion, Pipeline
 from sklearn.linear_model import LogisticRegression
@@ -329,6 +330,209 @@ class E5Candidate:
         return metadata
 
 
+class HybridTfidfE5Candidate:
+    """Experimental sparse TF-IDF + normalized E5 feature concatenation strategy."""
+
+    name = "hybrid_tfidf_e5"
+    tfidf_global_scale = 1.0 / math.sqrt(2.0)
+
+    @classmethod
+    def identity(cls) -> str:
+        return cls.name
+
+    @classmethod
+    def version(cls) -> str:
+        return "0.1.0"
+
+    @classmethod
+    def status(cls) -> ComponentStatus:
+        return ComponentStatus.EXPERIMENTAL
+
+    @classmethod
+    def capabilities(cls) -> dict[str, Any]:
+        return {
+            "requires_gpu": False,
+            "optional_extra": "embeddings",
+            "feature_type": "tfidf_word_char_plus_e5",
+            "fusion": "sparse_horizontal_concatenation",
+            "supports_batch_prediction": True,
+        }
+
+    @classmethod
+    def fingerprint(
+        cls,
+        *,
+        code_revision: str | None = None,
+        source_commit_sha: str | None = None,
+        model_id: str | None = None,
+        model_revision: str | None = None,
+        classifier_c: float = 1.0,
+        class_weight: str | None = None,
+    ) -> str:
+        model_id = model_id or E5Candidate.model_id
+        model_revision = model_revision or E5Candidate.default_model_revision
+        return strategy_fingerprint(
+            identity=cls.identity(),
+            version=cls.version(),
+            hyperparameters={
+                "fusion": "sparse_hstack_tfidf_word_char_and_e5",
+                "tfidf_word_ngram_range": [1, 2],
+                "tfidf_char_ngram_range": [3, 5],
+                "tfidf_max_features_per_vectorizer": 50000,
+                "tfidf_max_features_tie_break": "term_frequency_desc_then_feature_name_asc",
+                "tfidf_global_scale": cls.tfidf_global_scale,
+                "e5_prefix": "query: ",
+                "e5_normalize_embeddings": True,
+                "e5_batch_size": 32,
+                "classifier": "LogisticRegression",
+                "classifier_C": classifier_c,
+                "classifier_class_weight": class_weight,
+                "classifier_max_iter": 1000,
+            },
+            code_revision=code_revision,
+            source_commit_sha=source_commit_sha,
+            model_revision=model_revision,
+            extra={**cls.capabilities(), "model_id": model_id},
+        )
+
+    @classmethod
+    def _join_features(cls, tfidf_features: Any, e5_embeddings: np.ndarray):
+        dense = np.asarray(e5_embeddings, dtype=np.float32)
+        if dense.ndim != 2:
+            raise ValueError(f"E5 embeddings must be two-dimensional; got shape={dense.shape}")
+        if tfidf_features.shape[0] != dense.shape[0]:
+            raise ValueError(
+                f"TF-IDF/E5 row mismatch: {tfidf_features.shape[0]} != {dense.shape[0]}"
+            )
+        if not np.isfinite(dense).all():
+            raise ValueError("E5 embeddings contain non-finite values")
+        # Word and char TF-IDF channels are individually L2-normalized. Scaling
+        # their concatenation by 1/sqrt(2) makes the combined lexical block
+        # approximately unit-norm, matching normalized E5 embeddings.
+        lexical = tfidf_features * cls.tfidf_global_scale
+        return sparse.hstack(
+            (lexical, sparse.csr_matrix(dense)),
+            format="csr",
+        )
+
+    @classmethod
+    def fit(
+        cls,
+        train_texts: list[str],
+        train_labels: np.ndarray,
+        val_texts: list[str],
+        model_id: str | None = None,
+        model_revision: str | None = None,
+        classifier_c: float = 1.0,
+        class_weight: str | None = None,
+    ) -> FittedCandidate:
+        model_id = model_id or E5Candidate.model_id
+        model_revision = model_revision or E5Candidate.default_model_revision
+        if not math.isfinite(float(classifier_c)) or float(classifier_c) <= 0:
+            raise ValueError("Hybrid classifier C must be a finite number > 0")
+        if class_weight not in (None, "balanced"):
+            raise ValueError("Hybrid class_weight must be None or 'balanced'")
+
+        started_total = time.perf_counter()
+        encoder = E5Candidate._load_encoder(model_id, model_revision)
+        encoder_load_seconds = time.perf_counter() - started_total
+
+        feature_started = time.perf_counter()
+        tfidf_features = TfidfCandidate.build().named_steps["features"]
+        x_train_tfidf = tfidf_features.fit_transform(train_texts)
+        x_val_tfidf = tfidf_features.transform(val_texts)
+        x_train_e5 = E5Candidate._encode(encoder, train_texts)
+        x_val_e5 = E5Candidate._encode(encoder, val_texts)
+        x_train = cls._join_features(x_train_tfidf, x_train_e5)
+        x_val = cls._join_features(x_val_tfidf, x_val_e5)
+        feature_extraction_seconds = time.perf_counter() - feature_started
+
+        classifier = LogisticRegression(
+            C=float(classifier_c),
+            class_weight=class_weight,
+            max_iter=1000,
+        )
+        fit_started = time.perf_counter()
+        classifier.fit(x_train, train_labels)
+        classifier_fit_seconds = time.perf_counter() - fit_started
+
+        predict_started = time.perf_counter()
+        val_pred = classifier.predict(x_val)
+        predict_seconds = time.perf_counter() - predict_started
+
+        probe = val_texts[:min(16, len(val_texts))]
+        latency_started = time.perf_counter()
+        for _ in range(3):
+            for text in probe:
+                lexical = tfidf_features.transform([text])
+                dense = E5Candidate._encode(encoder, [text])
+                classifier.predict(cls._join_features(lexical, dense))
+        latency = (time.perf_counter() - latency_started) / (3 * max(1, len(probe)))
+
+        model = {
+            "classifier": classifier,
+            "tfidf_features": tfidf_features,
+            "encoder": encoder,
+            "model_id": model_id,
+            "model_revision": model_revision,
+            "classifier_c": float(classifier_c),
+            "class_weight": class_weight,
+        }
+        metadata = {
+            "feature_type": "tfidf_word_char_plus_multilingual_e5",
+            "fusion": "sparse_horizontal_concatenation",
+            "tfidf_global_scale": cls.tfidf_global_scale,
+            "model_id": model_id,
+            "model_revision": model_revision,
+            "classifier_C": float(classifier_c),
+            "classifier_class_weight": class_weight,
+            "encoder_load_seconds": encoder_load_seconds,
+            "feature_extraction_seconds": feature_extraction_seconds,
+            "classifier_fit_seconds": classifier_fit_seconds,
+            "tfidf_feature_count": int(x_train_tfidf.shape[1]),
+            "embedding_dim": int(x_train_e5.shape[1]),
+            "combined_feature_count": int(x_train.shape[1]),
+        }
+        return FittedCandidate(
+            name=cls.name,
+            model=model,
+            fit_seconds=encoder_load_seconds + feature_extraction_seconds + classifier_fit_seconds,
+            val_predict_seconds=predict_seconds,
+            latency_seconds_per_example=latency,
+            val_pred=val_pred,
+            metadata=metadata,
+        )
+
+    @classmethod
+    def transform_features(cls, model: dict[str, Any], texts: list[str]):
+        lexical = model["tfidf_features"].transform(texts)
+        dense = E5Candidate._encode(model["encoder"], texts)
+        return cls._join_features(lexical, dense)
+
+    @classmethod
+    def predict(cls, model: dict[str, Any], texts: list[str]) -> np.ndarray:
+        features = cls.transform_features(model, texts)
+        return model["classifier"].predict(features)
+
+    @staticmethod
+    def save(candidate: FittedCandidate, directory: Path) -> dict[str, Any]:
+        directory.mkdir(parents=True, exist_ok=True)
+        joblib.dump(candidate.model["tfidf_features"], directory / "tfidf_features.joblib")
+        joblib.dump(candidate.model["classifier"], directory / "classifier.joblib")
+        metadata = {
+            "strategy": "hybrid_tfidf_e5",
+            "tfidf_features_file": "tfidf_features.joblib",
+            "model_file": "classifier.joblib",
+            "model_id": candidate.model["model_id"],
+            "model_revision": candidate.model["model_revision"],
+            **candidate.metadata,
+        }
+        (directory / "strategy.json").write_text(
+            json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        return metadata
+
+
 def load_strategy_model(model_directory: str | Path):
     directory = Path(model_directory)
     manifest_path = directory / "manifest.json"
@@ -353,12 +557,31 @@ def load_strategy_model(model_directory: str | Path):
         classifier = joblib.load(artifact_dir / "classifier.joblib")
         return {"strategy": strategy, "model": classifier, "encoder": encoder,
                 "manifest": manifest}
+    if strategy == "hybrid_tfidf_e5":
+        strategy_metadata = manifest.get("strategy_metadata", {})
+        model_id = manifest.get("model_id") or strategy_metadata.get("model_id")
+        model_revision = strategy_metadata.get("model_revision")
+        if not model_id:
+            raise ValueError("Hybrid TF-IDF/E5 manifest does not contain a model_id")
+        encoder = E5Candidate._load_encoder(model_id, model_revision)
+        model = {
+            "classifier": joblib.load(artifact_dir / "classifier.joblib"),
+            "tfidf_features": joblib.load(artifact_dir / "tfidf_features.joblib"),
+            "encoder": encoder,
+            "model_id": model_id,
+            "model_revision": model_revision,
+            "classifier_c": strategy_metadata.get("classifier_C", 1.0),
+            "class_weight": strategy_metadata.get("classifier_class_weight"),
+        }
+        return {"strategy": strategy, "model": model, "manifest": manifest}
     raise ValueError(f"Unknown strategy in manifest: {strategy}")
 
 
 def predict_loaded(loaded: dict[str, Any], texts: list[str]) -> np.ndarray:
     if loaded["strategy"] == "tfidf":
         return loaded["model"].predict(texts)
+    if loaded["strategy"] == "hybrid_tfidf_e5":
+        return HybridTfidfE5Candidate.predict(loaded["model"], texts)
     features = E5Candidate._encode(loaded["encoder"], texts)
     return loaded["model"].predict(features)
 
@@ -366,4 +589,6 @@ def predict_loaded(loaded: dict[str, Any], texts: list[str]) -> np.ndarray:
 def extract_loaded_features(loaded: dict[str, Any], texts: list[str]):
     if loaded["strategy"] == "tfidf":
         return loaded["model"].named_steps["features"].transform(texts)
+    if loaded["strategy"] == "hybrid_tfidf_e5":
+        return HybridTfidfE5Candidate.transform_features(loaded["model"], texts)
     return E5Candidate._encode(loaded["encoder"], texts)
