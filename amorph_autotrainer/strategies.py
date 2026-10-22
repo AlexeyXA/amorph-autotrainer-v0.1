@@ -129,11 +129,11 @@ class TfidfCandidate:
     @staticmethod
     def build() -> Pipeline:
         features = FeatureUnion([
-            ("word", TfidfVectorizer(
+            ("word", DeterministicTfidfVectorizer(
                 analyzer="word", ngram_range=(1, 2), max_features=50_000,
                 min_df=1, sublinear_tf=True,
             )),
-            ("char", TfidfVectorizer(
+            ("char", DeterministicTfidfVectorizer(
                 analyzer="char", ngram_range=(3, 5), max_features=50_000,
                 min_df=1, sublinear_tf=True,
             )),
