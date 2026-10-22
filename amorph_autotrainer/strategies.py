@@ -12,6 +12,8 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.pipeline import FeatureUnion, Pipeline
 from sklearn.linear_model import LogisticRegression
 
+from .strategy_abi import ComponentStatus, strategy_fingerprint
+
 
 @dataclass
 class FittedCandidate:
@@ -26,6 +28,44 @@ class FittedCandidate:
 
 class TfidfCandidate:
     name = "tfidf"
+
+    @classmethod
+    def identity(cls) -> str:
+        return cls.name
+
+    @classmethod
+    def version(cls) -> str:
+        return "0.1.0"
+
+    @classmethod
+    def status(cls) -> ComponentStatus:
+        return ComponentStatus.CANONICAL
+
+    @classmethod
+    def capabilities(cls) -> dict[str, Any]:
+        return {
+            "requires_gpu": False,
+            "optional_extra": None,
+            "feature_type": "word_char_tfidf",
+            "supports_batch_prediction": True,
+        }
+
+    @classmethod
+    def fingerprint(cls, *, code_revision: str | None = None) -> str:
+        return strategy_fingerprint(
+            identity=cls.identity(),
+            version=cls.version(),
+            hyperparameters={
+                "word_ngram_range": [1, 2],
+                "char_ngram_range": [3, 5],
+                "max_features_per_vectorizer": 50000,
+                "logistic_regression_C": 1.0,
+                "max_iter": 1000,
+                "class_weight": None,
+            },
+            code_revision=code_revision,
+            extra=cls.capabilities(),
+        )
 
     @staticmethod
     def build() -> Pipeline:
@@ -81,6 +121,51 @@ class E5Candidate:
     model_id = "intfloat/multilingual-e5-small"
     # Pinned Hugging Face commit observed on the official model repository on 2026-10-20.
     default_model_revision = "614241f622f53c4eeff9890bdc4f31cfecc418b3"
+
+    @classmethod
+    def identity(cls) -> str:
+        return cls.name
+
+    @classmethod
+    def version(cls) -> str:
+        return "0.1.0"
+
+    @classmethod
+    def status(cls) -> ComponentStatus:
+        return ComponentStatus.EXPERIMENTAL
+
+    @classmethod
+    def capabilities(cls) -> dict[str, Any]:
+        return {
+            "requires_gpu": False,
+            "optional_extra": "embeddings",
+            "feature_type": "multilingual_e5_embeddings",
+            "supports_batch_prediction": True,
+        }
+
+    @classmethod
+    def fingerprint(
+        cls,
+        *,
+        code_revision: str | None = None,
+        model_id: str | None = None,
+        model_revision: str | None = None,
+    ) -> str:
+        return strategy_fingerprint(
+            identity=cls.identity(),
+            version=cls.version(),
+            hyperparameters={
+                "prefix": "query: ",
+                "normalize_embeddings": True,
+                "batch_size": 32,
+                "classifier": "LogisticRegression",
+                "classifier_C": 1.0,
+                "classifier_max_iter": 1000,
+            },
+            code_revision=code_revision,
+            model_revision=model_revision or cls.default_model_revision,
+            extra={**cls.capabilities(), "model_id": model_id or cls.model_id},
+        )
 
     @staticmethod
     def _load_encoder(model_id: str, model_revision: str | None = None):
