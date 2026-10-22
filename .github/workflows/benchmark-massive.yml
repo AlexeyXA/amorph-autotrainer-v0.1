@@ -8,12 +8,16 @@ on:
       - "amorph_autotrainer/**"
       - ".github/workflows/benchmark-massive.yml"
   workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/benchmark-massive.yml"
 
 permissions:
   contents: read
 
 jobs:
   massive-benchmark:
+    if: github.event_name != 'pull_request' || github.head_ref == 'experiment/e5-c01-balanced-20261022'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -38,10 +42,22 @@ jobs:
           echo "started_utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
       - name: Run MASSIVE ru-RU benchmark (TF-IDF and E5)
         run: |
-          python scripts/benchmark_massive_ru.py \
-            --with-e5 \
-            --output-dir benchmark_runs/massive_ru_e5 \
-            --max-runtime-seconds 7200
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            # This protected experiment branch is the controlled E5 C=0.1/balanced variant.
+            python scripts/benchmark_massive_ru.py \
+              --with-e5 \
+              --output-dir benchmark_runs/massive_ru_e5 \
+              --max-runtime-seconds 7200 \
+              --e5-classifier-c 0.1 \
+              --e5-class-weight balanced
+          else
+            python scripts/benchmark_massive_ru.py \
+              --with-e5 \
+              --output-dir benchmark_runs/massive_ru_e5 \
+              --max-runtime-seconds 7200 \
+              --e5-classifier-c 1.0 \
+              --e5-class-weight none
+          fi
       - name: Record execution manifest and summary
         if: always()
         env:
@@ -50,6 +66,8 @@ jobs:
           SOURCE_COMMIT: ${{ github.sha }}
           ACTIONS_RUN_ID: ${{ github.run_id }}
           ACTIONS_RUN_ATTEMPT: ${{ github.run_attempt }}
+          E5_CLASSIFIER_C: ${{ github.event_name == 'pull_request' && '0.1' || '1.0' }}
+          E5_CLASS_WEIGHT: ${{ github.event_name == 'pull_request' && 'balanced' || 'none' }}
         run: |
           python - <<'PY'
           import hashlib
@@ -89,7 +107,19 @@ jobs:
               "source_commit": os.environ.get("SOURCE_COMMIT"),
               "workflow_run_id": os.environ.get("ACTIONS_RUN_ID"),
               "workflow_run_attempt": os.environ.get("ACTIONS_RUN_ATTEMPT"),
-              "command": "python scripts/benchmark_massive_ru.py --with-e5 --output-dir benchmark_runs/massive_ru_e5 --max-runtime-seconds 7200",
+              "command": (
+                  "python scripts/benchmark_massive_ru.py --with-e5 "
+                  "--output-dir benchmark_runs/massive_ru_e5 --max-runtime-seconds 7200 "
+                  f"--e5-classifier-c {os.environ.get('E5_CLASSIFIER_C', '1.0')} "
+                  f"--e5-class-weight {os.environ.get('E5_CLASS_WEIGHT', 'none')}"
+              ),
+              "e5_classifier_config": {
+                  "C": float(os.environ.get("E5_CLASSIFIER_C", "1.0")),
+                  "class_weight": (
+                      None if os.environ.get("E5_CLASS_WEIGHT", "none") == "none"
+                      else os.environ.get("E5_CLASS_WEIGHT")
+                  ),
+              },
               "started_at_utc": os.environ.get("BENCHMARK_STARTED_UTC"),
               "finished_at_utc": datetime.now(timezone.utc).isoformat(),
               "elapsed_seconds": max(0, ended - started),
@@ -107,6 +137,7 @@ jobs:
               handle.write("- Source commit: " + str(manifest["source_commit"]) + "\n")
               handle.write("- Dataset revision: " + str(manifest["dataset_revision"]) + "\n")
               handle.write("- Elapsed seconds: " + str(manifest["elapsed_seconds"]) + "\n")
+              handle.write("- E5 classifier config: " + json.dumps(manifest["e5_classifier_config"]) + "\n")
               if result:
                   handle.write("- Selected strategy: " + str(result.get("selected_strategy")) + "\n")
                   handle.write("\nOfficial-test metrics (report-only; after internal selection):\n\n")
