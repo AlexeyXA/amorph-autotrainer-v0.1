@@ -163,3 +163,8 @@ python scripts/benchmark_massive_ru.py --with-e5 --output-dir benchmark_runs/mas
 - Для E5-классификации используется префикс `query: `, как рекомендует карточка `intfloat/multilingual-e5-small` для embeddings, применяемых как признаки.
 - Исчерпание положительного runtime-лимита на ранних стадиях имеет отдельный тип исключения и возвращает CLI-код `3`; недопустимый `--max-runtime-seconds 0` по-прежнему считается ошибкой конфигурации и возвращает `1`.
 - Confidence interval Quality Gate — paired class-stratified bootstrap по примерам. Если наблюдения внутри внешних групп коррелированы, это ещё не cluster bootstrap; интервал может быть слишком оптимистичным. Этот статистический пробел остаётся открытым.
+
+
+## Экспериментальный профиль E5 для MASSIVE ru-RU
+
+Для датасета MASSIVE ru-RU зафиксирован сильный кандидат C=0.1, class_weight=balanced; это результат одного воспроизводимого прогона, а не универсальная рекомендация. Production-default E5 в main остаётся C=1.0, class_weight=None. См. [отчёт эксперимента](docs/MASSIVE_RU_E5_CANDIDATE_2026-10-22.md) и [машиночитаемый профиль](configs/experimental/massive_ru_e5_c01_balanced.json). Официальный test — только отчётная оценка; профиль не включается автоматически.
