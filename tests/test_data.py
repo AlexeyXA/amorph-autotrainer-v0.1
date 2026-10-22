@@ -121,6 +121,14 @@ def test_group_split_enforces_min_gate_rows_per_class(tmp_path):
     assert min(gate_counts.values()) >= 5
     assert set(gate_counts) == {"a", "b", "c"}
     assert bundle.report["split_method"].startswith("milp_group_assignment")
+    assert bundle.report["gate_design"]["minimum_rows_per_label_in_gate"] == 5
+    assert bundle.report["gate_design"]["target_fractions"] == {
+        "train": 0.44999999999999996,
+        "validation": 0.15,
+        "acceptance_gate": 0.25,
+        "test": 0.15,
+    }
+    assert min(bundle.report["label_rows_by_split"]["acceptance_gate"].values()) >= 5
 
 
 def test_group_split_fails_closed_when_gate_floor_infeasible(tmp_path):
@@ -142,3 +150,40 @@ def test_group_split_fails_closed_when_gate_floor_infeasible(tmp_path):
             min_examples_per_label_in_gate=5,
             min_examples_per_label_in_other_splits=1,
         )
+
+
+
+def test_gate_floor_uses_actual_rows_within_a_group_not_group_presence(tmp_path):
+    path = tmp_path / "uneven_groups.csv"
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["text", "label", "account"])
+        writer.writeheader()
+        # One group carries five distinct rows of each label; the other three groups
+        # carry one row per label. Only the row-count MILP can satisfy gate>=5 while
+        # assigning a different group to each remaining split.
+        for label in ("a", "b"):
+            for i in range(5):
+                writer.writerow({
+                    "text": f"large-group {label} unique-record-{i}",
+                    "label": label,
+                    "account": "large",
+                })
+        for account in ("g1", "g2", "g3"):
+            for label in ("a", "b"):
+                writer.writerow({
+                    "text": f"{account} {label} unique-record",
+                    "label": label,
+                    "account": account,
+                })
+    records, report, digest = load_records(path, group_column="account")
+    bundle = split_records(
+        records, digest, report, max_near_duplicate_audit_rows=1,
+        min_examples_per_label_in_gate=5,
+    )
+    assert set(bundle.gate_labels.tolist()) == {"a", "b"}
+    from collections import Counter
+    gate_counts = Counter(bundle.gate_labels.tolist())
+    assert gate_counts["a"] >= 5
+    assert gate_counts["b"] >= 5
+    assert min(bundle.report["label_rows_by_split"]["validation"].values()) >= 1
+    assert min(bundle.report["label_rows_by_split"]["test"].values()) >= 1
