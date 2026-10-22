@@ -293,6 +293,7 @@ def main() -> int:
     write_json(out / "dataset_provenance.json", provenance)
 
     # Imports are delayed so data provenance is retained even if AMORPH fails.
+    from amorph_autotrainer.benchmark_metrics import per_class_classification_metrics
     from amorph_autotrainer.cost import CostConfig
     from amorph_autotrainer.metrics import classification_metrics
     from amorph_autotrainer.pipeline import run_training
@@ -329,6 +330,9 @@ def main() -> int:
     test_texts = test_frame["utt"].tolist()
     test_labels = np.asarray(test_frame["intent"].tolist())
     expected_labels = sorted(train_label_set)
+    eligible_training_support_by_label = {
+        label: int(count) for label, count in train_frame["intent"].value_counts().items()
+    }
 
     def external_classification_metrics(y_true, y_pred):
         metrics = classification_metrics(y_true, y_pred)
@@ -366,6 +370,12 @@ def main() -> int:
         metrics["test_support_by_training_label"] = {
             label: int(np.sum(y_true == label)) for label in expected_labels
         }
+        metrics["per_class_metrics"] = per_class_classification_metrics(
+            y_true=y_true,
+            y_pred=y_pred,
+            eligible_training_support_by_label=eligible_training_support_by_label,
+        )
+        metrics["per_class_metrics_scope"] = "official_test_report_only"
         return metrics
 
     run_dir = Path(result["run_dir"])
@@ -397,6 +407,13 @@ def main() -> int:
         "internal_amorph_run": result,
         "selected_strategy": result["selected_strategy"],
         "e5_classifier_config": {"C": args.e5_classifier_c, "class_weight": None if args.e5_class_weight == "none" else args.e5_class_weight, "model_revision": E5_MODEL_REVISION},
+        "per_class_metrics_protocol": {
+            "scope": "official_test_report_only",
+            "label_universe": "union of eligible official-training labels, official-test labels, and predicted labels",
+            "eligible_training_support_definition": "row count in prepared official training partition after benchmark eligibility filters, before AMORPH internal splitting",
+            "zero_division": 0,
+            "used_for_selection_or_gate": False,
+        },
         "external_test_metrics_by_strategy": external_metrics,
         "selected_strategy_official_test_metrics": external_metrics.get(result["selected_strategy"]),
         "conclusion": "Official-test metrics are report-only and are calculated after internal selection. Interpret this as a task-specific classification benchmark; do not infer competitiveness against RAG, LLM fine-tuning, or other task families.",
