@@ -48,7 +48,10 @@ def test_end_to_end_tfidf_only(tmp_path):
     replay = json.loads(Path(result["run_dir"], "replay.json").read_text(encoding="utf-8"))
     assert replay["format"] == "amorph_replay_descriptor_v1"
     assert replay["descriptor_sha256"] == manifest["replay_descriptor"]["descriptor_sha256"]
-    assert report["status"] in {"accepted", "target_not_met", "baseline_kept_candidate_rejected", "selected_no_absolute_target", "acceptance_gate_underpowered"}
+    assert report["status"] in {"accepted", "target_not_met", "baseline_kept_candidate_rejected", "baseline_only", "baseline_self_comparison", "accepted_no_absolute_target", "acceptance_gate_underpowered"}
+    assert report["acceptance_gate_comparison"]["selected_candidate_scope"] == "baseline_self_comparison"
+    assert any("compared TF-IDF with itself" in warning for warning in report["warnings"])
+    assert report["tco_assumption_status"] == "assumed_free_inputs"
     assert "acceptance_gate_sufficient" in report
     data_report = json.loads((Path(result["run_dir"]) / "data_report.json").read_text(encoding="utf-8"))
     assert data_report["split_method"] in {
@@ -64,6 +67,24 @@ def test_end_to_end_tfidf_only(tmp_path):
     pred = predict_loaded(loaded, ["Команда выиграла матч и вышла в финал турнира"])
     assert len(pred) == 1
     assert Path(result["database_path"]).is_file()
+
+
+def test_baseline_only_status_is_explicit_when_gate_is_sufficient(tmp_path):
+    data_path = create_demo_csv(tmp_path / "baseline-only.csv", examples_per_class=30)
+    result = run_training(
+        csv_path=data_path,
+        output_dir=tmp_path / "runs",
+        strategies=["tfidf"],
+        config=CostConfig(
+            max_runtime_seconds=300, max_candidates=1, expected_queries=100,
+            bootstrap_samples=100, min_gate_examples_per_class=5,
+        ),
+    )
+    report = json.loads(Path(result["report_path"]).read_text(encoding="utf-8"))
+    assert report["acceptance_gate_sufficient"] is True
+    assert report["status"] == "baseline_only"
+    assert report["acceptance_gate_comparison"]["is_self_comparison"] is True
+    assert any("No challenger passed the validation threshold" in warning for warning in report["warnings"])
 
 
 def test_cli_exit_code_4_when_acceptance_gate_is_underpowered(tmp_path, capsys):
