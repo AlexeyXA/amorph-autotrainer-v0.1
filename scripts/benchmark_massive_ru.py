@@ -79,6 +79,10 @@ def main() -> int:
     parser.add_argument("--compute-eur-per-hour", type=float, default=0.0)
     parser.add_argument("--human-hours", type=float, default=0.0)
     parser.add_argument("--human-eur-per-hour", type=float, default=0.0)
+    parser.add_argument("--e5-classifier-c", type=float, default=1.0,
+                        help="E5 LogisticRegression C (default is current C=1.0)")
+    parser.add_argument("--e5-class-weight", choices=("none", "balanced"), default="none",
+                        help="E5 LogisticRegression class weight for a controlled A/B experiment")
     args = parser.parse_args()
 
     out = Path(args.output_dir).resolve()
@@ -256,6 +260,12 @@ def main() -> int:
         "official_test_label_coverage_fraction": (
             len(test_label_set & train_label_set) / len(train_label_set)
         ),
+        "official_test_labels_supported_by_training_fraction": (
+            len(test_label_set & train_label_set) / len(test_label_set) if test_label_set else 1.0
+        ),
+        "training_labels_covered_by_official_test_fraction": (
+            len(test_label_set & train_label_set) / len(train_label_set) if train_label_set else 1.0
+        ),
         "train_group_count_worker_id": int(train_frame["worker_id"].nunique()),
         "split_policy": "Official MASSIVE train partition only enters AMORPH. Rows sharing worker_id stay in one internal split. Official MASSIVE test is evaluated only after strategy selection and is never used by the selector or acceptance gate.",
         "limitations": [
@@ -273,6 +283,13 @@ def main() -> int:
             "Training labels absent from the official test partition: "
             + ", ".join(train_labels_absent_from_test)
         )
+    if len(train_frame) > 5000:
+        provenance["limitations"].append(
+            "AMORPH internal near-duplicate audit is skipped above 5,000 training rows; worker_id grouping prevents shared-worker cross-split leakage but does not rule out near-duplicates across different workers."
+        )
+    provenance["limitations"].append(
+        "The legacy official_test_label_coverage_fraction uses the training-label universe as its denominator; use official_test_labels_supported_by_training_fraction for the share of official-test labels with training support."
+    )
     write_json(out / "dataset_provenance.json", provenance)
 
     # Imports are delayed so data provenance is retained even if AMORPH fails.
@@ -305,6 +322,8 @@ def main() -> int:
         config=cost_config,
         e5_model_id=E5_MODEL_ID,
         e5_model_revision=E5_MODEL_REVISION,
+        e5_classifier_c=args.e5_classifier_c,
+        e5_class_weight=None if args.e5_class_weight == "none" else args.e5_class_weight,
     )
 
     test_texts = test_frame["utt"].tolist()
@@ -337,6 +356,12 @@ def main() -> int:
         )
         metrics["official_test_label_coverage_fraction"] = (
             len(observed & set(expected_labels)) / len(expected_labels)
+        )
+        metrics["official_test_labels_supported_by_training_fraction"] = (
+            len(observed & set(expected_labels)) / len(observed) if observed else 1.0
+        )
+        metrics["training_labels_covered_by_official_test_fraction"] = (
+            len(observed & set(expected_labels)) / len(expected_labels) if expected_labels else 1.0
         )
         metrics["test_support_by_training_label"] = {
             label: int(np.sum(y_true == label)) for label in expected_labels
@@ -371,6 +396,7 @@ def main() -> int:
         "dataset_provenance_file": str(out / "dataset_provenance.json"),
         "internal_amorph_run": result,
         "selected_strategy": result["selected_strategy"],
+        "e5_classifier_config": {"C": args.e5_classifier_c, "class_weight": None if args.e5_class_weight == "none" else args.e5_class_weight, "model_revision": E5_MODEL_REVISION},
         "external_test_metrics_by_strategy": external_metrics,
         "selected_strategy_official_test_metrics": external_metrics.get(result["selected_strategy"]),
         "conclusion": "Official-test metrics are report-only and are calculated after internal selection. Interpret this as a task-specific classification benchmark; do not infer competitiveness against RAG, LLM fine-tuning, or other task families.",
@@ -386,6 +412,7 @@ def main() -> int:
         "official_test_labels_without_training_support": test_labels_without_training_support,
         "official_test_label_coverage_fraction": provenance["official_test_label_coverage_fraction"],
         "selected_strategy": result["selected_strategy"],
+        "e5_classifier_config": {"C": args.e5_classifier_c, "class_weight": None if args.e5_class_weight == "none" else args.e5_class_weight},
         "external_test_metrics_by_strategy": external_metrics,
         "provenance_file": str(out / "dataset_provenance.json"),
         "result_file": str(out / "benchmark_result.json"),

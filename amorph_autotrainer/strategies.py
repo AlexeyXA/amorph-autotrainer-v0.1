@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,7 +52,10 @@ class TfidfCandidate:
         }
 
     @classmethod
-    def fingerprint(cls, *, code_revision: str | None = None) -> str:
+    def fingerprint(
+        cls, *, code_revision: str | None = None,
+        source_commit_sha: str | None = None,
+    ) -> str:
         return strategy_fingerprint(
             identity=cls.identity(),
             version=cls.version(),
@@ -64,6 +68,7 @@ class TfidfCandidate:
                 "class_weight": None,
             },
             code_revision=code_revision,
+            source_commit_sha=source_commit_sha,
             extra=cls.capabilities(),
         )
 
@@ -150,6 +155,9 @@ class E5Candidate:
         code_revision: str | None = None,
         model_id: str | None = None,
         model_revision: str | None = None,
+        classifier_c: float = 1.0,
+        class_weight: str | None = None,
+        source_commit_sha: str | None = None,
     ) -> str:
         return strategy_fingerprint(
             identity=cls.identity(),
@@ -159,10 +167,12 @@ class E5Candidate:
                 "normalize_embeddings": True,
                 "batch_size": 32,
                 "classifier": "LogisticRegression",
-                "classifier_C": 1.0,
+                "classifier_C": classifier_c,
+                "classifier_class_weight": class_weight,
                 "classifier_max_iter": 1000,
             },
             code_revision=code_revision,
+            source_commit_sha=source_commit_sha,
             model_revision=model_revision or cls.default_model_revision,
             extra={**cls.capabilities(), "model_id": model_id or cls.model_id},
         )
@@ -194,9 +204,14 @@ class E5Candidate:
     @classmethod
     def fit(cls, train_texts: list[str], train_labels: np.ndarray,
             val_texts: list[str], model_id: str | None = None,
-            model_revision: str | None = None) -> FittedCandidate:
+            model_revision: str | None = None, classifier_c: float = 1.0,
+            class_weight: str | None = None) -> FittedCandidate:
         model_id = model_id or cls.model_id
         model_revision = model_revision or cls.default_model_revision
+        if not math.isfinite(float(classifier_c)) or float(classifier_c) <= 0:
+            raise ValueError("E5 classifier C must be a finite number > 0")
+        if class_weight not in (None, "balanced"):
+            raise ValueError("E5 class_weight must be None or 'balanced'")
         total_started = time.perf_counter()
         encoder = cls._load_encoder(model_id, model_revision)
         load_elapsed = time.perf_counter() - total_started
@@ -206,7 +221,9 @@ class E5Candidate:
         x_val = cls._encode(encoder, val_texts)
         feature_elapsed = time.perf_counter() - started
 
-        classifier = LogisticRegression(max_iter=1000)
+        classifier = LogisticRegression(
+            C=float(classifier_c), class_weight=class_weight, max_iter=1000
+        )
         started = time.perf_counter()
         classifier.fit(x_train, train_labels)
         fit_seconds = time.perf_counter() - started
@@ -227,13 +244,15 @@ class E5Candidate:
 
         return FittedCandidate(
             name=cls.name, model={"classifier": classifier, "encoder": encoder,
-                                  "model_id": model_id, "model_revision": model_revision},
+                                  "model_id": model_id, "model_revision": model_revision,
+                                  "classifier_c": float(classifier_c), "class_weight": class_weight},
             fit_seconds=fit_seconds + feature_elapsed + load_elapsed,
             val_predict_seconds=predict_seconds,
             latency_seconds_per_example=latency,
             val_pred=val_pred,
             metadata={"feature_type": "multilingual_e5_embeddings", "model_id": model_id,
                       "model_revision": model_revision,
+                      "classifier_C": float(classifier_c), "classifier_class_weight": class_weight,
                       "encoder_load_seconds": load_elapsed,
                       "feature_extraction_seconds": feature_elapsed,
                       "embedding_dim": int(x_train.shape[1])},
