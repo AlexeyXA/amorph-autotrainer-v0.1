@@ -24,3 +24,7 @@ pytest -q
 
 ## After merge
 Re-run MASSIVE workflow; require `acceptance_gate_sufficient == true` before treating the run as gate-passed.
+
+
+## Source-of-truth caution
+This directory contains handoff patches. The initial 0001 file was only a partial signature/docstring patch and did not itself implement the per-label MILP row-count constraints. Verify the executable `amorph_autotrainer/data.py`, the pipeline pass-through, and regression tests before claiming the protocol is implemented.
