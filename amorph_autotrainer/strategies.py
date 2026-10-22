@@ -16,6 +16,59 @@ from sklearn.linear_model import LogisticRegression
 from .strategy_abi import ComponentStatus, strategy_fingerprint
 
 
+class DeterministicTfidfVectorizer(TfidfVectorizer):
+    """TfidfVectorizer with an explicit tie-break when max_features truncates vocabulary.
+
+    sklearn ranks capped features by total term frequency, but equal-frequency
+    features are otherwise selected through an unstable argsort tie. Resolve
+    those ties by feature name so repeated runs retain the same vocabulary.
+    """
+
+    def _limit_features(self, X, vocabulary, high=None, low=None, limit=None):
+        if high is None and low is None and limit is None:
+            return X, set()
+
+        # CountVectorizer stores one non-zero entry per feature and document.
+        document_frequency = np.bincount(X.indices, minlength=X.shape[1])
+        mask = np.ones(len(document_frequency), dtype=bool)
+        if high is not None:
+            mask &= document_frequency <= high
+        if low is not None:
+            mask &= document_frequency >= low
+
+        if limit is not None and int(mask.sum()) > limit:
+            term_frequency = np.asarray(X.sum(axis=0)).ravel()
+            feature_name_by_index = {
+                int(index): name for name, index in vocabulary.items()
+            }
+            eligible = np.flatnonzero(mask)
+            chosen = sorted(
+                eligible.tolist(),
+                key=lambda index: (
+                    -int(term_frequency[index]),
+                    feature_name_by_index[index],
+                ),
+            )[:limit]
+            stable_mask = np.zeros(len(document_frequency), dtype=bool)
+            stable_mask[chosen] = True
+            mask = stable_mask
+
+        new_indices = np.cumsum(mask) - 1
+        for term, old_index in list(vocabulary.items()):
+            old_index = int(old_index)
+            if mask[old_index]:
+                vocabulary[term] = int(new_indices[old_index])
+            else:
+                del vocabulary[term]
+
+        kept_indices = np.flatnonzero(mask)
+        if kept_indices.size == 0:
+            raise ValueError(
+                "After pruning, no terms remain. Try a lower min_df or a higher max_df."
+            )
+        return X[:, kept_indices]
+
+
 @dataclass
 class FittedCandidate:
     name: str
@@ -66,6 +119,7 @@ class TfidfCandidate:
                 "logistic_regression_C": 1.0,
                 "max_iter": 1000,
                 "class_weight": None,
+                "max_features_tie_break": "term_frequency_desc_then_feature_name_asc",
             },
             code_revision=code_revision,
             source_commit_sha=source_commit_sha,
@@ -75,11 +129,11 @@ class TfidfCandidate:
     @staticmethod
     def build() -> Pipeline:
         features = FeatureUnion([
-            ("word", TfidfVectorizer(
+            ("word", DeterministicTfidfVectorizer(
                 analyzer="word", ngram_range=(1, 2), max_features=50_000,
                 min_df=1, sublinear_tf=True,
             )),
-            ("char", TfidfVectorizer(
+            ("char", DeterministicTfidfVectorizer(
                 analyzer="char", ngram_range=(3, 5), max_features=50_000,
                 min_df=1, sublinear_tf=True,
             )),
