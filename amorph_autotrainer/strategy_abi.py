@@ -61,6 +61,7 @@ def strategy_fingerprint(
     version: str,
     hyperparameters: Mapping[str, Any],
     code_revision: str | None = None,
+    source_commit_sha: str | None = None,
     model_revision: str | None = None,
     extra: Mapping[str, Any] | None = None,
 ) -> str:
@@ -74,6 +75,7 @@ def strategy_fingerprint(
         "version": version,
         "hyperparameters": dict(hyperparameters),
         "code_revision": code_revision,
+        "source_commit_sha": source_commit_sha,
         "model_revision": model_revision,
     }
     if extra:
