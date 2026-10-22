@@ -17,7 +17,7 @@ from .cost import CostConfig, estimate_tco_eur
 from .data import load_records, split_records
 from .experiment_db import ExperimentDB
 from .metrics import classification_metrics, gate_candidate, paired_stratified_bootstrap_macro_f1
-from .strategies import E5Candidate, TfidfCandidate, FittedCandidate
+from .strategies import E5Candidate, HybridTfidfE5Candidate, TfidfCandidate, FittedCandidate
 from .strategy_abi import build_replay_descriptor, run_conformance_checks
 
 
@@ -82,7 +82,7 @@ def _library_versions() -> dict[str, str | None]:
 
 
 def _validate_strategy_names(names: list[str]) -> list[str]:
-    supported = {"tfidf", "e5"}
+    supported = {"tfidf", "e5", "hybrid_tfidf_e5"}
     cleaned: list[str] = []
     for name in names:
         name = name.strip().lower()
@@ -111,6 +111,8 @@ def run_training(
     e5_model_revision: str | None = E5Candidate.default_model_revision,
     e5_classifier_c: float = 1.0,
     e5_class_weight: str | None = None,
+    hybrid_classifier_c: float = 1.0,
+    hybrid_class_weight: str | None = None,
     near_duplicate_threshold: float = 0.985,
     max_near_duplicate_audit_rows: int = 5000,
 ) -> dict[str, Any]:
@@ -137,6 +139,8 @@ def run_training(
         "e5_model_revision": e5_model_revision,
         "e5_classifier_c": e5_classifier_c,
         "e5_class_weight": e5_class_weight,
+        "hybrid_classifier_c": hybrid_classifier_c,
+        "hybrid_class_weight": hybrid_class_weight,
         "near_duplicate_threshold": near_duplicate_threshold,
         "max_near_duplicate_audit_rows": max_near_duplicate_audit_rows,
     }, ensure_ascii=False, sort_keys=True)
@@ -184,6 +188,15 @@ def run_training(
                     class_weight=e5_class_weight,
                 )
                 strategy_metadata = E5Candidate.save(candidate, candidate_dir)
+            elif name == "hybrid_tfidf_e5":
+                candidate = HybridTfidfE5Candidate.fit(
+                    bundle.train_texts, bundle.train_labels, bundle.val_texts,
+                    model_id=e5_model_id,
+                    model_revision=e5_model_revision,
+                    classifier_c=hybrid_classifier_c,
+                    class_weight=hybrid_class_weight,
+                )
+                strategy_metadata = HybridTfidfE5Candidate.save(candidate, candidate_dir)
             else:
                 raise ValueError(f"Unsupported strategy: {name}")
 
@@ -236,6 +249,8 @@ def run_training(
         if name == "e5":
             features = E5Candidate._encode(candidate.model["encoder"], texts)
             return candidate.model["classifier"].predict(features)
+        if name == "hybrid_tfidf_e5":
+            return HybridTfidfE5Candidate.predict(candidate.model, texts)
         return candidate.model.predict(texts)
 
     for name in list(candidates):
@@ -302,6 +317,8 @@ def run_training(
         if name == "e5":
             features = E5Candidate._encode(candidate.model["encoder"], texts)
             return candidate.model["classifier"].predict(features)
+        if name == "hybrid_tfidf_e5":
+            return HybridTfidfE5Candidate.predict(candidate.model, texts)
         return candidate.model.predict(texts)
 
     # Independent acceptance-gate split: never used for strategy selection or final reporting.
@@ -397,18 +414,20 @@ def run_training(
     if final_name == "tfidf":
         TfidfCandidate.save(final_candidate, final_artifact_dir)
         strategy_meta = {"strategy": "tfidf", "model_file": "model.joblib", **final_candidate.metadata}
-    else:
+    elif final_name == "e5":
         strategy_meta = E5Candidate.save(final_candidate, final_artifact_dir)
+    else:
+        strategy_meta = HybridTfidfE5Candidate.save(final_candidate, final_artifact_dir)
 
     commit_sha, git_dirty = _git_provenance()
     source_tree_sha256 = _source_tree_sha256()
-    strategy_classes = {"tfidf": TfidfCandidate, "e5": E5Candidate}
+    strategy_classes = {"tfidf": TfidfCandidate, "e5": E5Candidate, "hybrid_tfidf_e5": HybridTfidfE5Candidate}
     strategy_fingerprints: dict[str, str] = {}
     strategy_status: dict[str, str] = {}
     for name, candidate in candidates.items():
         strategy_class = strategy_classes[name]
         strategy_status[name] = strategy_class.status().value
-        if name == "e5":
+        if name in ("e5", "hybrid_tfidf_e5"):
             strategy_fingerprints[name] = strategy_class.fingerprint(
                 code_revision=source_tree_sha256,
                 source_commit_sha=commit_sha,
@@ -466,7 +485,7 @@ def run_training(
         )
         if not validation_eligible_challengers:
             warnings.append(
-                "No challenger passed the validation threshold; E5 was not compared with TF-IDF by the acceptance gate."
+                "No challenger passed the validation threshold; no non-baseline strategy was compared with TF-IDF by the acceptance gate."
             )
         else:
             warnings.append(
@@ -594,7 +613,7 @@ def run_training(
                     "path": "selected_features/",
                     "warning": "Feature matrices can encode sensitive information; protect artifacts accordingly.",
                 }
-            else:
+            elif final_name == "e5":
                 for split_name, texts in [
                     ("train", bundle.train_texts), ("validation", bundle.val_texts),
                     ("acceptance_gate", bundle.gate_texts), ("test", bundle.test_texts),
@@ -606,6 +625,19 @@ def run_training(
                     "path": "selected_features/",
                     "dimension": int(final_loaded_model["encoder"].get_sentence_embedding_dimension()),
                     "warning": "Embeddings can encode sensitive information; protect artifacts accordingly.",
+                }
+            else:
+                for split_name, texts in [
+                    ("train", bundle.train_texts), ("validation", bundle.val_texts),
+                    ("acceptance_gate", bundle.gate_texts), ("test", bundle.test_texts),
+                ]:
+                    matrix = HybridTfidfE5Candidate.transform_features(final_loaded_model, texts)
+                    sparse.save_npz(features_dir / f"{split_name}.npz", matrix.tocsr())
+                manifest["features"] = {
+                    "format": "scipy sparse NPZ (TF-IDF + E5 concatenation)",
+                    "path": "selected_features/",
+                    "feature_count": int(final_loaded_model["classifier"].n_features_in_),
+                    "warning": "Hybrid features can encode sensitive information; protect artifacts accordingly.",
                 }
             _write_json(root / "report.json", manifest)
             selected_manifest = dict(manifest)
