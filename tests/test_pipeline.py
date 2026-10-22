@@ -40,6 +40,14 @@ def test_end_to_end_tfidf_only(tmp_path):
     assert "max_near_duplicate_audit_rows" in manifest["config"]
     assert manifest["split_config"]["random_seed"] == 42
     assert "e5_model_revision" in manifest["config"]
+    assert "strategy_fingerprints" in manifest
+    assert "strategy_status" in manifest
+    assert manifest["protocol_status"]["conformance_gate"] == "implemented"
+    assert "tfidf" in manifest["conformance_gate"]
+    assert Path(result["run_dir"], "replay.json").is_file()
+    replay = json.loads(Path(result["run_dir"], "replay.json").read_text(encoding="utf-8"))
+    assert replay["format"] == "amorph_replay_descriptor_v1"
+    assert replay["descriptor_sha256"] == manifest["replay_descriptor"]["descriptor_sha256"]
     assert report["status"] in {"accepted", "target_not_met", "baseline_kept_candidate_rejected", "selected_no_absolute_target", "acceptance_gate_underpowered"}
     assert "acceptance_gate_sufficient" in report
     data_report = json.loads((Path(result["run_dir"]) / "data_report.json").read_text(encoding="utf-8"))
