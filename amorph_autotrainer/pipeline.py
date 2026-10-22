@@ -317,6 +317,8 @@ def run_training(
         if name == "e5":
             features = E5Candidate._encode(candidate.model["encoder"], texts)
             return candidate.model["classifier"].predict(features)
+        if name == "hybrid_tfidf_e5":
+            return HybridTfidfE5Candidate.predict(candidate.model, texts)
         return candidate.model.predict(texts)
 
     # Independent acceptance-gate split: never used for strategy selection or final reporting.
@@ -483,7 +485,7 @@ def run_training(
         )
         if not validation_eligible_challengers:
             warnings.append(
-                "No challenger passed the validation threshold; E5 was not compared with TF-IDF by the acceptance gate."
+                "No challenger passed the validation threshold; no non-baseline strategy was compared with TF-IDF by the acceptance gate."
             )
         else:
             warnings.append(
