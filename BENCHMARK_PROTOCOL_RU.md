@@ -39,3 +39,10 @@
 ## Что означает статистический gate
 
 Paired class-stratified bootstrap оценивает неопределённость разницы Macro-F1 на acceptance-gate выборке для уже обученных моделей. Он не оценивает вариативность при повторном обучении и не гарантирует работу на будущем распределении. Для более сильных выводов нужны независимые повторные split/seed и достаточный размер выборки.
+
+
+## Gate protocol 1+3 (MASSIVE)
+- Target fractions for train/validation/acceptance-gate/final-test: **0.45 / 0.15 / 0.25 / 0.15**.
+- Before internal splitting, the benchmark may exclude whole training labels with fewer than 20 unique texts or fewer than four distinct worker groups after conflict removal and exact deduplication. Report counts and SHA-256 provenance for the removed rows; never filter the official test to accommodate train support.
+- For a grouped split, the MILP must require at least five actual rows per retained label in acceptance gate and at least one row per label in train, validation, and internal test. It must count rows per group and label, not just group presence, and validate the returned assignment. If infeasible, fail closed.
+- The eligibility thresholds are heuristic feasibility screens, not formal statistical power analysis. Gate sufficiency is a separate measured condition; official-test metrics remain report-only.
