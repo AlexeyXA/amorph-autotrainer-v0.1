@@ -42,6 +42,16 @@ def test_conformance_fails_on_length_mismatch():
         run_conformance_checks(predict, strategy_name="bad", sample_texts=["a", "b"])
 
 
+def test_conformance_rejects_two_dimensional_predictions():
+    def predict(texts):
+        return np.asarray([["ok"] for _ in texts], dtype=object)
+
+    with pytest.raises(ValueError, match="one-dimensional"):
+        run_conformance_checks(
+            predict, strategy_name="bad-shape", sample_texts=["a", "b"]
+        )
+
+
 def test_replay_descriptor_has_stable_hash_field():
     d = build_replay_descriptor(
         commit_sha="deadbeef",
