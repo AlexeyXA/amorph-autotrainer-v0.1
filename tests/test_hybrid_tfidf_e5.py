@@ -145,6 +145,7 @@ def test_pipeline_trains_hybrid_without_external_encoder_or_default_change(tmp_p
         csv_path=data_path,
         output_dir=tmp_path / "runs",
         strategies=["hybrid_tfidf_e5"],
+        export_features=True,
         config=CostConfig(
             max_runtime_seconds=300,
             max_candidates=2,
@@ -167,3 +168,7 @@ def test_pipeline_trains_hybrid_without_external_encoder_or_default_change(tmp_p
     assert manifest["config"]["strategies"] == ["tfidf", "hybrid_tfidf_e5"]
     assert manifest["config"]["e5_classifier_c"] == 1.0
     assert manifest["config"]["e5_class_weight"] is None
+    exported = run_dir / "selected_features" / "acceptance_gate.npz"
+    assert exported.is_file()
+    loaded_features = sparse.load_npz(exported)
+    assert loaded_features.shape[1] == manifest["strategy_metadata"]["combined_feature_count"]
