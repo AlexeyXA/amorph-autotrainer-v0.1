@@ -149,7 +149,7 @@ def test_pipeline_trains_hybrid_without_external_encoder_or_default_change(tmp_p
             max_runtime_seconds=300,
             max_candidates=2,
             expected_queries=10,
-            bootstrap_samples=20,
+            bootstrap_samples=100,
             noninferiority_margin=0.02,
             min_gate_examples_per_class=3,
         ),
