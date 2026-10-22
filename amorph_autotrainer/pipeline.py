@@ -18,6 +18,7 @@ from .data import load_records, split_records
 from .experiment_db import ExperimentDB
 from .metrics import classification_metrics, gate_candidate, paired_stratified_bootstrap_macro_f1
 from .strategies import E5Candidate, TfidfCandidate, FittedCandidate
+from .strategy_abi import build_replay_descriptor, run_conformance_checks
 
 
 class RuntimeBudgetExceededError(RuntimeError):
@@ -145,6 +146,8 @@ def run_training(
         records, dataset_hash, data_report, seed=config.random_seed,
         near_duplicate_threshold=near_duplicate_threshold,
         max_near_duplicate_audit_rows=max_near_duplicate_audit_rows,
+        min_examples_per_label_in_gate=config.min_gate_examples_per_class,
+        min_examples_per_label_in_other_splits=1,
     )
     _write_json(root / "data_report.json", bundle.report)
     if time.perf_counter() - started_all >= config.max_runtime_seconds:
@@ -220,10 +223,46 @@ def run_training(
             if name == "tfidf":
                 raise RuntimeError(f"Required TF-IDF baseline failed: {exc}") from exc
 
+    # Strategy conformance is checked before selector/gate bootstrap use.
+    strategy_conformance: dict[str, dict[str, Any]] = {}
+
+    def predict_for_conformance(candidate: FittedCandidate, name: str, texts: list[str]) -> np.ndarray:
+        if name == "e5":
+            features = E5Candidate._encode(candidate.model["encoder"], texts)
+            return candidate.model["classifier"].predict(features)
+        return candidate.model.predict(texts)
+
+    for name in list(candidates):
+        candidate = candidates[name]
+        probe_texts = bundle.val_texts[:min(3, len(bundle.val_texts))]
+        try:
+            check = run_conformance_checks(
+                lambda texts, candidate=candidate, strategy_name=name:
+                    predict_for_conformance(candidate, strategy_name, texts),
+                strategy_name=name,
+                sample_texts=probe_texts,
+            )
+            strategy_conformance[name] = check
+        except Exception as exc:
+            candidate_errors[name] = f"CONFORMANCE_FAILED: {type(exc).__name__}: {exc}"
+            database.record({
+                "run_id": run_id,
+                "strategy": name,
+                "created_at_utc": _timestamp(),
+                "dataset_sha256": dataset_hash,
+                "config_json": config_json,
+                "status": "conformance_failed",
+                "error": candidate_errors[name],
+            })
+            candidates.pop(name, None)
+            val_metrics.pop(name, None)
+            if name == "tfidf":
+                raise RuntimeError(f"Required TF-IDF baseline failed strategy conformance: {exc}") from exc
+
     if not candidates:
-        raise RuntimeError(f"No candidate completed successfully. Errors: {candidate_errors}")
+        raise RuntimeError(f"No conforming candidate completed successfully. Errors: {candidate_errors}")
     if "tfidf" not in candidates:
-        raise RuntimeError("Required TF-IDF baseline is missing")
+        raise RuntimeError("Required TF-IDF baseline is missing after conformance checks")
 
     best_val_f1 = max(m["macro_f1"] for m in val_metrics.values())
     if config.min_macro_f1 is None:
@@ -350,13 +389,58 @@ def run_training(
         strategy_meta = E5Candidate.save(final_candidate, final_artifact_dir)
 
     commit_sha, git_dirty = _git_provenance()
+    source_tree_sha256 = _source_tree_sha256()
+    strategy_classes = {"tfidf": TfidfCandidate, "e5": E5Candidate}
+    strategy_fingerprints: dict[str, str] = {}
+    strategy_status: dict[str, str] = {}
+    for name, candidate in candidates.items():
+        strategy_class = strategy_classes[name]
+        strategy_status[name] = strategy_class.status().value
+        if name == "e5":
+            strategy_fingerprints[name] = strategy_class.fingerprint(
+                code_revision=source_tree_sha256,
+                model_id=candidate.model.get("model_id"),
+                model_revision=candidate.model.get("model_revision"),
+            )
+        else:
+            strategy_fingerprints[name] = strategy_class.fingerprint(code_revision=source_tree_sha256)
+
+    protocol_status = {
+        "strategy_abi": "implemented",
+        "conformance_gate": "implemented",
+        "gate_row_count_constraints": (
+            "enforced_by_milp"
+            if bundle.report.get("group_split_optimizer") is not None
+            else "not_enforced_by_group_milp_fallback"
+        ),
+    }
+    replay_descriptor = build_replay_descriptor(
+        commit_sha=commit_sha,
+        source_tree_sha256=source_tree_sha256,
+        dataset_sha256=dataset_hash,
+        dataset_revision=bundle.report.get("dataset_revision"),
+        split_hashes=bundle.report.get("splits", {}),
+        seed=config.random_seed,
+        library_versions=_library_versions(),
+        strategy_fingerprints=strategy_fingerprints,
+        selected_strategy=final_name,
+        acceptance_gate_status=final_status,
+        acceptance_gate_sufficient=gate_sufficient,
+        protocol_status=protocol_status,
+        extra={
+            "config": json.loads(config_json),
+            "strategy_conformance": strategy_conformance,
+            "split_gate_design": bundle.report.get("gate_design", {}),
+        },
+    )
+    _write_json(root / "replay.json", replay_descriptor)
     manifest = {
         "format_version": 1,
         "project": "AMORPH AutoTrainer",
         "project_version": "0.1.0",
         "commit_sha": commit_sha,
         "git_working_tree_dirty": git_dirty,
-        "source_tree_sha256": _source_tree_sha256(),
+        "source_tree_sha256": source_tree_sha256,
         "python_version": platform.python_version(),
         "python_implementation": platform.python_implementation(),
         "platform": platform.platform(),
@@ -375,6 +459,12 @@ def run_training(
             "random_seed": config.random_seed,
         },
         "strategy_metadata": strategy_meta,
+        "strategy_fingerprints": strategy_fingerprints,
+        "strategy_status": strategy_status,
+        "protocol_status": protocol_status,
+        "conformance_gate": strategy_conformance,
+        "replay_descriptor_path": "replay.json",
+        "replay_descriptor": replay_descriptor,
         "validation_metrics_all_candidates": val_metrics,
         "candidate_errors": candidate_errors,
         "selected_before_acceptance_gate": selected_name,

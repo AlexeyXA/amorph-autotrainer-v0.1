@@ -52,8 +52,6 @@ def test_group_column_prevents_group_leakage_across_all_four_splits(tmp_path):
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=["text", "label", "account"])
         writer.writeheader()
-        # Each account contributes one record to every class; the split must
-        # keep all records for one account in a single partition.
         for account in range(10):
             for label in ("a", "b", "c"):
                 writer.writerow({
@@ -86,3 +84,106 @@ def test_group_column_requires_a_value_for_each_nonempty_record(tmp_path):
     path.write_text("text,label,account\nvalid text,a,\nother text,b,account-2\n", encoding="utf-8")
     with pytest.raises(ValueError, match="Missing group value"):
         load_records(path, group_column="account")
+
+
+def test_default_split_fractions_favor_larger_acceptance_gate(tmp_path):
+    path = tmp_path / "data.csv"
+    make_csv(path)
+    records, report, digest = load_records(path)
+    bundle = split_records(
+        records, digest, report, max_near_duplicate_audit_rows=1,
+    )
+    n = len(records)
+    assert abs(len(bundle.gate_texts) / n - 0.25) < 0.12
+    assert abs(len(bundle.train_texts) / n - 0.45) < 0.15
+
+
+def test_group_split_enforces_min_gate_rows_per_class(tmp_path):
+    path = tmp_path / "grouped.csv"
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["text", "label", "account"])
+        writer.writeheader()
+        for account in range(16):
+            for label in ("a", "b", "c"):
+                writer.writerow({
+                    "text": f"acct-{account:02d} class {label} unique body {account}-{label}",
+                    "label": label,
+                    "account": f"acct-{account:02d}",
+                })
+    records, report, digest = load_records(path, group_column="account")
+    bundle = split_records(
+        records, digest, report,
+        min_examples_per_label_in_gate=5,
+        min_examples_per_label_in_other_splits=1,
+    )
+    from collections import Counter
+    gate_counts = Counter(str(x) for x in bundle.gate_labels.tolist())
+    assert min(gate_counts.values()) >= 5
+    assert set(gate_counts) == {"a", "b", "c"}
+    assert bundle.report["split_method"].startswith("milp_group_assignment")
+    assert bundle.report["gate_design"]["minimum_rows_per_label_in_gate"] == 5
+    assert bundle.report["gate_design"]["target_fractions"] == {
+        "train": 0.44999999999999996,
+        "validation": 0.15,
+        "acceptance_gate": 0.25,
+        "test": 0.15,
+    }
+    assert min(bundle.report["label_rows_by_split"]["acceptance_gate"].values()) >= 5
+
+
+def test_group_split_fails_closed_when_gate_floor_infeasible(tmp_path):
+    path = tmp_path / "tiny_groups.csv"
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["text", "label", "account"])
+        writer.writeheader()
+        for account in range(6):
+            for label in ("a", "b"):
+                writer.writerow({
+                    "text": f"tiny-{account} {label} payload {account}-{label}",
+                    "label": label,
+                    "account": f"g{account}",
+                })
+    records, report, digest = load_records(path, group_column="account")
+    with pytest.raises(ValueError, match="Could not construct a leakage-safe four-way|underpowered|infeasible|fewer than"):
+        split_records(
+            records, digest, report,
+            min_examples_per_label_in_gate=5,
+            min_examples_per_label_in_other_splits=1,
+        )
+
+
+
+def test_gate_floor_uses_actual_rows_within_a_group_not_group_presence(tmp_path):
+    path = tmp_path / "uneven_groups.csv"
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["text", "label", "account"])
+        writer.writeheader()
+        # One group carries five distinct rows of each label; the other three groups
+        # carry one row per label. Only the row-count MILP can satisfy gate>=5 while
+        # assigning a different group to each remaining split.
+        for label in ("a", "b"):
+            for i in range(5):
+                writer.writerow({
+                    "text": f"large-group {label} unique-record-{i}",
+                    "label": label,
+                    "account": "large",
+                })
+        for account in ("g1", "g2", "g3"):
+            for label in ("a", "b"):
+                writer.writerow({
+                    "text": f"{account} {label} unique-record",
+                    "label": label,
+                    "account": account,
+                })
+    records, report, digest = load_records(path, group_column="account")
+    bundle = split_records(
+        records, digest, report, max_near_duplicate_audit_rows=1,
+        min_examples_per_label_in_gate=5,
+    )
+    assert set(bundle.gate_labels.tolist()) == {"a", "b"}
+    from collections import Counter
+    gate_counts = Counter(bundle.gate_labels.tolist())
+    assert gate_counts["a"] >= 5
+    assert gate_counts["b"] >= 5
+    assert min(bundle.report["label_rows_by_split"]["validation"].values()) >= 1
+    assert min(bundle.report["label_rows_by_split"]["test"].values()) >= 1

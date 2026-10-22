@@ -250,14 +250,22 @@ def _choose_four_way_group_split(
     validation_fraction: float,
     gate_fraction: float,
     test_fraction: float,
-    time_limit_seconds: float = 10.0,
+    min_examples_per_label_in_gate: int = 5,
+    min_examples_per_label_in_other_splits: int = 1,
+    time_limit_seconds: float = 15.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
     """Assign whole groups to train/validation/gate/test jointly with a MILP.
 
-    The optimizer must put every class in every split and each group in exactly one
-    split. Its objective minimizes normalized absolute deviations from requested row
-    fractions. A time-limited incumbent is accepted only after validating all hard
-    constraints; otherwise this routine fails closed.
+    Hard constraints:
+    - every source group is assigned to exactly one split;
+    - each label has at least min_examples_per_label_in_gate actual rows in gate;
+    - each label has at least min_examples_per_label_in_other_splits actual rows
+      in train, validation, and internal test.
+
+    A group can contain multiple rows of a label; constraints are based on row counts
+    per (group, label), not merely binary label presence. The objective minimizes
+    normalized absolute deviations from target row fractions. If the MILP cannot
+    satisfy all hard constraints, this routine fails closed.
     """
     from scipy.optimize import Bounds, LinearConstraint, milp
     from scipy.sparse import coo_matrix
@@ -269,6 +277,10 @@ def _choose_four_way_group_split(
     )
     if np.any(fractions <= 0) or not np.isclose(fractions.sum(), 1.0, atol=1e-8):
         raise ValueError(f"Invalid grouped split fractions: {fractions.tolist()}")
+    if min_examples_per_label_in_gate < 1:
+        raise ValueError("min_examples_per_label_in_gate must be >= 1")
+    if min_examples_per_label_in_other_splits < 1:
+        raise ValueError("min_examples_per_label_in_other_splits must be >= 1")
 
     subset_labels = labels[indices]
     subset_groups = groups[indices]
@@ -284,9 +296,10 @@ def _choose_four_way_group_split(
         )
 
     label_to_column = {label: column for column, label in enumerate(unique_labels)}
-    group_has_label = np.zeros((group_count, label_count), dtype=bool)
+    group_label_counts = np.zeros((group_count, label_count), dtype=np.int64)
     for group_index, label in zip(group_inverse, subset_labels):
-        group_has_label[group_index, label_to_column[label]] = True
+        group_label_counts[group_index, label_to_column[label]] += 1
+    group_has_label = group_label_counts > 0
     group_weights = np.bincount(group_inverse, minlength=group_count).astype(float)
 
     # Binary x[group, split] variables, followed by one continuous absolute-size
@@ -313,15 +326,21 @@ def _choose_four_way_group_split(
         upper_constraints.append(1.0)
         constraint_row += 1
 
-    # Every label must appear in all four splits.
+    # Enforce minimum actual ROW counts for each label in each split.
+    # A group can hold several rows of one label, so coefficients must be row counts.
     for label_column in range(label_count):
-        member_groups = np.flatnonzero(group_has_label[:, label_column])
+        member_groups = np.flatnonzero(group_label_counts[:, label_column] > 0)
         for split_index in range(split_count):
             for group_index in member_groups:
                 row_indices.append(constraint_row)
                 column_indices.append(int(group_index) * split_count + split_index)
-                coefficients.append(1.0)
-            lower_constraints.append(1.0)
+                coefficients.append(float(group_label_counts[group_index, label_column]))
+            required_rows = (
+                min_examples_per_label_in_gate
+                if split_index == 2
+                else min_examples_per_label_in_other_splits
+            )
+            lower_constraints.append(float(required_rows))
             upper_constraints.append(np.inf)
             constraint_row += 1
 
@@ -383,8 +402,9 @@ def _choose_four_way_group_split(
     solve_seconds = time.perf_counter() - started
     if solution.x is None:
         raise ValueError(
-            "Could not construct a leakage-safe four-way grouped split with every class "
-            f"represented in every split within {time_limit_seconds:.1f}s. "
+            "Could not construct a leakage-safe four-way grouped split satisfying the "
+            "per-label row floors in acceptance gate and other splits within "
+            f"{time_limit_seconds:.1f}s. "
             f"Optimizer status={solution.status}: {solution.message}. "
             "Collect more independent groups or revise the predeclared split policy."
         )
@@ -412,6 +432,30 @@ def _choose_four_way_group_split(
         raise RuntimeError(
             "Group-split optimizer returned a partition with missing classes: "
             + json.dumps(missing_coverage, ensure_ascii=False)
+        )
+
+    label_rows_by_split: dict[str, dict[str, int]] = {}
+    insufficient_label_rows: dict[str, dict[str, int]] = {}
+    for label_column, label in enumerate(unique_labels):
+        counts_for_label = {
+            split_names[split_index]: int(
+                group_label_counts[group_assignment == split_index, label_column].sum()
+            )
+            for split_index in range(split_count)
+        }
+        label_rows_by_split[str(label)] = counts_for_label
+        for split_index, split_name in enumerate(split_names):
+            required_rows = (
+                min_examples_per_label_in_gate
+                if split_name == "acceptance_gate"
+                else min_examples_per_label_in_other_splits
+            )
+            if counts_for_label[split_name] < required_rows:
+                insufficient_label_rows.setdefault(str(label), {})[split_name] = counts_for_label[split_name]
+    if insufficient_label_rows:
+        raise RuntimeError(
+            "Group-split optimizer returned a partition below required per-label row floors: "
+            + json.dumps(insufficient_label_rows, ensure_ascii=False)
         )
 
     row_assignment = group_assignment[group_inverse]
@@ -449,8 +493,12 @@ def _choose_four_way_group_split(
         "random_seed_used": False,
         "hard_constraints": [
             "each worker/near-duplicate group assigned to exactly one split",
-            "every effective training label represented in train, validation, acceptance_gate and test",
+            f"each label has >= {min_examples_per_label_in_gate} rows in acceptance_gate",
+            f"each label has >= {min_examples_per_label_in_other_splits} rows in train, validation and test",
         ],
+        "minimum_rows_per_label_in_gate": int(min_examples_per_label_in_gate),
+        "minimum_rows_per_label_in_other_splits": int(min_examples_per_label_in_other_splits),
+        "rows_per_label_by_split": label_rows_by_split,
         "target_fractions": {
             split_names[index]: float(fractions[index]) for index in range(split_count)
         },
@@ -527,15 +575,21 @@ def split_records(
     dataset_sha256: str,
     initial_report: dict[str, Any],
     seed: int = 42,
-    test_size: float = 0.20,
+    test_size: float = 0.15,
     validation_size: float = 0.15,
-    gate_size: float = 0.15,
+    gate_size: float = 0.25,
     near_duplicate_threshold: float = 0.985,
     max_near_duplicate_audit_rows: int = 5000,
+    min_examples_per_label_in_gate: int = 5,
+    min_examples_per_label_in_other_splits: int = 1,
 ) -> DatasetBundle:
     if (not 0 < test_size < 0.5 or not 0 < validation_size < 0.5
             or not 0 < gate_size < 0.5 or test_size + validation_size + gate_size >= 0.8):
         raise ValueError("test_size, validation_size and gate_size must be positive and sum to less than 0.8")
+    if min_examples_per_label_in_gate < 1:
+        raise ValueError("min_examples_per_label_in_gate must be >= 1")
+    if min_examples_per_label_in_other_splits < 1:
+        raise ValueError("min_examples_per_label_in_other_splits must be >= 1")
     if not 0 < near_duplicate_threshold <= 1:
         raise ValueError("near_duplicate_threshold must be in (0, 1]")
 
@@ -558,12 +612,12 @@ def split_records(
     group_split_used = near_duplicate_grouping_used or has_external_groups
     group_split_optimizer_metadata = None
     if group_split_used:
-        too_few = {label: count for label, count in group_counts_by_class.items() if count < 5}
+        too_few = {label: count for label, count in group_counts_by_class.items() if count < 4}
         if too_few:
             raise ValueError(
-                "Near-duplicate grouping leaves fewer than 5 distinct groups in some classes, "
-                f"so an honest train/validation/gate/test split is not reliable: {too_few}. "
-                "Collect more examples or review/adjust the near-duplicate threshold."
+                "Grouping leaves fewer than 4 distinct groups in some classes, "
+                f"which is insufficient to represent them across all four splits: {too_few}. "
+                "Collect more independent groups or review/adjust the near-duplicate threshold."
             )
 
         train_fraction = 1.0 - test_size - validation_size - gate_size
@@ -581,6 +635,8 @@ def split_records(
             validation_fraction=validation_size,
             gate_fraction=gate_size,
             test_fraction=test_size,
+            min_examples_per_label_in_gate=min_examples_per_label_in_gate,
+            min_examples_per_label_in_other_splits=min_examples_per_label_in_other_splits,
         )
     else:
         # Explicit fallback: exact duplicates were removed globally; near-duplicate
@@ -627,6 +683,27 @@ def split_records(
     else:
         split_method = "stratified_exact_dedup_fallback"
     report["split_method"] = split_method
+    report["gate_design"] = {
+        "target_fractions": {
+            "train": float(1.0 - test_size - validation_size - gate_size),
+            "validation": float(validation_size),
+            "acceptance_gate": float(gate_size),
+            "test": float(test_size),
+        },
+        "minimum_rows_per_label_in_gate": int(min_examples_per_label_in_gate),
+        "minimum_rows_per_label_in_other_splits": int(min_examples_per_label_in_other_splits),
+        "grouped_solver_enforces_row_floors": group_split_optimizer_metadata is not None,
+    }
+    labels_by_split: dict[str, dict[str, int]] = {}
+    for split_name, split_labels in (
+        ("train", train_labels), ("validation", val_labels),
+        ("acceptance_gate", gate_labels), ("test", test_labels),
+    ):
+        labels_by_split[split_name] = {
+            str(label): int(np.sum(split_labels == label))
+            for label in sorted(set(labels.tolist()), key=str)
+        }
+    report["label_rows_by_split"] = labels_by_split
     if group_split_optimizer_metadata is not None:
         report["group_split_optimizer"] = group_split_optimizer_metadata
     report["group_column_used"] = initial_report.get("group_column")
