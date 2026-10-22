@@ -27,3 +27,5 @@
 +    A time-limited incumbent is accepted only after validating hard constraints;
 +    otherwise this routine fails closed.
      """
+     from scipy.optimize import Bounds, LinearConstraint, milp
+     from scipy.sparse import coo_matrix
