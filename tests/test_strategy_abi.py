@@ -69,3 +69,22 @@ def test_strategy_fingerprint_changes_with_hyperparameters():
         identity="tfidf", version="1.0.0", hyperparameters={"C": 10}, code_revision=None
     )
     assert a != b
+    c = strategy_fingerprint(
+        identity="tfidf", version="1.0.0", hyperparameters={"C": 1},
+        code_revision=None, source_commit_sha="deadbeef",
+    )
+    assert a != c
+
+
+def test_e5_fingerprint_changes_with_classifier_configuration_and_commit():
+    baseline = E5Candidate.fingerprint(
+        code_revision="tree", source_commit_sha="commit", classifier_c=1.0, class_weight=None
+    )
+    tuned = E5Candidate.fingerprint(
+        code_revision="tree", source_commit_sha="commit", classifier_c=0.1, class_weight="balanced"
+    )
+    changed_commit = E5Candidate.fingerprint(
+        code_revision="tree", source_commit_sha="other-commit", classifier_c=1.0, class_weight=None
+    )
+    assert baseline != tuned
+    assert baseline != changed_commit
