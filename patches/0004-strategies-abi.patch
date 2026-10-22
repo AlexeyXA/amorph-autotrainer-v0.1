@@ -1,0 +1,60 @@
+--- a/amorph_autotrainer/strategies.py
++++ b/amorph_autotrainer/strategies.py
+@@ -12,6 +12,8 @@
+ from sklearn.pipeline import FeatureUnion, Pipeline
+ from sklearn.linear_model import LogisticRegression
+ 
++from .strategy_abi import ComponentStatus, strategy_fingerprint
++
+ 
+ @dataclass
+ class FittedCandidate:
+@@ -26,6 +28,48 @@
+ 
+ class TfidfCandidate:
+     name = "tfidf"
++    strategy_version = "1.0.0"
++
++    @classmethod
++    def identity(cls) -> str:
++        return cls.name
++
++    @classmethod
++    def version(cls) -> str:
++        return cls.strategy_version
++
++    @classmethod
++    def status(cls) -> ComponentStatus:
++        return ComponentStatus.CANONICAL
++
++    @classmethod
++    def capabilities(cls) -> dict[str, Any]:
++        return {
++            "requires_gpu": False,
++            "requires_network": False,
++            "optional_extra": None,
++            "supports_feature_export": True,
++        }
++
++    @classmethod
++    def hyperparameters(cls) -> dict[str, Any]:
++        return {
++            "word_ngram_range": [1, 2],
++            "char_ngram_range": [3, 5],
++            "max_features_per_vectorizer": 50_000,
++            "classifier": "LogisticRegression",
++            "max_iter": 1000,
++        }
++
++    @classmethod
++    def fingerprint(cls, *, code_revision: str | None = None) -> str:
++        return strategy_fingerprint(
++            identity=cls.identity(),
++            version=cls.version(),
++            hyperparameters=cls.hyperparameters(),
++            code_revision=code_revision,
++            model_revision=None,
++        )
+ 
+     @staticmethod
+     def build() -> Pipeline:
