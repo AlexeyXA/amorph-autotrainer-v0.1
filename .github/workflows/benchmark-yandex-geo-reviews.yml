@@ -111,7 +111,12 @@ jobs:
             benchmark_runs/yandex_geo_reviews/runs/*/report.json
             benchmark_runs/yandex_geo_reviews/runs/*/manifest.json
             benchmark_runs/yandex_geo_reviews/runs/*/data_report.json
+            benchmark_runs/yandex_geo_reviews/runs/*/replay.json
             benchmark_runs/yandex_geo_reviews/runs/*/proofgate/*.json
+            benchmark_runs/yandex_geo_reviews/runs/*/selected/manifest.json
+            benchmark_runs/yandex_geo_reviews/runs/*/selected/data_report.json
+            benchmark_runs/yandex_geo_reviews/runs/*/selected/replay.json
+            benchmark_runs/yandex_geo_reviews/runs/*/selected/proofgate/*.json
             benchmark_runs/yandex_geo_reviews/runs/*/candidates/*/validation_metrics.json
             benchmark_runs/yandex_geo_reviews/runs/*/candidates/*/strategy.json
           if-no-files-found: warn
