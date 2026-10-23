@@ -55,7 +55,7 @@ def test_end_to_end_tfidf_only(tmp_path):
         "acceptance_gate_conformance_failed",
     }
     assert report["acceptance_gate_comparison"]["selected_candidate_scope"] == "baseline_self_comparison"
-    assert any("compared TF-IDF with itself" in warning for warning in report["warnings"])
+    assert any("Shadow Proof Gate marks the TF-IDF self-comparison INCONCLUSIVE" in warning for warning in report["warnings"])
     assert report["proofgate"]["version"]
     assert report["proofgate"]["mode"] == "shadow"
     assert report["proofgate"]["decision_source"] == "legacy_gate_candidate"
@@ -68,7 +68,10 @@ def test_end_to_end_tfidf_only(tmp_path):
     assert proofgate_report["subtype"] in {"SELF_COMPARISON", "UNDERPOWERED"}
     assert proofgate_report["comparison"] is None
     assert proofgate_report["report_sha256"] == report["proofgate"]["selected_candidate_report_sha256"]
-    assert report["selected_candidate_gate"]["passed"] is False
+    # Dual-write intentionally retains the legacy self-comparison pass during
+    # the transition; the shadow Proof Gate correctly refuses to call it ACCEPT.
+    assert report["selected_candidate_gate"]["passed"] is True
+    assert report["proofgate"]["selected_candidate_verdict"] == "INCONCLUSIVE"
     assert report["tco_assumption_status"] == "assumed_free_inputs"
     assert "acceptance_gate_sufficient" in report
     data_report = json.loads((Path(result["run_dir"]) / "data_report.json").read_text(encoding="utf-8"))
@@ -139,7 +142,7 @@ def test_baseline_only_status_is_explicit_when_gate_is_sufficient(tmp_path):
     data_report = json.loads((Path(result["run_dir"]) / "data_report.json").read_text(encoding="utf-8"))
     assert proofgate_report["metadata"]["gate_split_sha256"] == data_report["splits"]["acceptance_gate"]["sha256"]
     replay = json.loads((Path(result["run_dir"]) / "replay.json").read_text(encoding="utf-8"))
-    assert replay["extra"]["proofgate"]["selected_candidate_report_sha256"] == proofgate_report["report_sha256"]
+    assert replay["extra"]["proofgate_shadow"]["selected_candidate_report_sha256"] == proofgate_report["report_sha256"]
 
 
 def test_cli_exit_code_4_when_acceptance_gate_is_underpowered(tmp_path, capsys):
