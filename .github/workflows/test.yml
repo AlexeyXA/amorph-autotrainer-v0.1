@@ -36,8 +36,9 @@ jobs:
             --bootstrap-samples 200 --min-gate-examples-per-class 5
 
   llm-sft-oasst1-poc:
-    # Expensive model download/training runs only for this isolated review branch.
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'experiments/llm-sft-oasst1-poc-20261023'
+    # Run expensive CPU model download/training only when the experiment PR is opened,
+    # or explicitly by workflow_dispatch on this branch. PR synchronize/doc edits use core CI only.
+    if: (github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'experiments/llm-sft-oasst1-poc-20261023' && github.event.action == 'opened') || (github.event_name == 'workflow_dispatch' && github.ref_name == 'experiments/llm-sft-oasst1-poc-20261023')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
