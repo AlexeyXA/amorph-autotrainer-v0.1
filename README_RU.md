@@ -14,6 +14,7 @@
 - Выбор кандидата по validation-метрике и времени обучения/инференса, без использования test при выборе.
 - Итоговый paired class-stratified bootstrap интервал разницы Macro-F1 между выбранным кандидатом и baseline.
 - Единый Proof Gate — источник решения pipeline: вердикты `ACCEPT` / `REJECT` / `INCONCLUSIVE`, проверки мощности и согласованности предсказаний, SHA-256 входов/отчёта и provenance-ссылки на gate-split. Legacy-расчёт оставлен только для независимого аудита паритета; mismatch не даёт кандидату пройти.
+- Внешний пример Proof Gate для обычного scikit-learn без AMORPH `train`: `examples/sklearn_holdout_gate.py`; ограничения и условия применения описаны в `docs/PROOFGATE_LIMITATIONS.md`.
 - SQLite-журнал экспериментов, хеш исходного CSV, отчёт по данным и manifest модели с версиями Python/библиотек, Git commit (если доступен) и параметрами split.
 - Фактические времена и оценка TCO по введённым ставкам. Стоимость — оценка, не счёт провайдера.
 - Опциональная выгрузка признаков (разреженные TF-IDF матрицы, dense E5 embeddings или sparse hybrid-признаки).
@@ -130,6 +131,23 @@ amorph-autotrainer runs --db runs/experiments.sqlite3 --limit 20
 - Если альтернативный кандидат не проходит gate, сохраняется baseline. Если gate содержит меньше установленного минимума примеров класса, статус `acceptance_gate_underpowered`, CLI завершает работу с кодом 4 и не заявляет статистическую приёмку.
 - Финальный test оценивается после выбора стратегии и не используется для fallback. После просмотра test нельзя подбирать настройки на тех же данных: следующая итерация требует нового независимого теста.
 - Коды завершения: `0` — pipeline выполнен; `2` — заданный порог качества не пройден; `3` — превышен runtime budget; `4` — acceptance gate недостаточно информативен.
+
+## Внешний пример Proof Gate для scikit-learn
+
+Пример обучает два фиксированных классификатора вне AutoTrainer и проверяет их парные предсказания на одной holdout gate-выборке. Он не подбирает гиперпараметры и не использует final test. Установи зависимости проекта, затем запусти:
+
+```bash
+python -m pip install -e ".[test]"
+python examples/sklearn_holdout_gate.py data.csv --text-column text --label-column label --output proofgate-report.json
+```
+
+Если есть устойчивый идентификатор группы (например, пользователь, клиент или источник), передай его явно:
+
+```bash
+python examples/sklearn_holdout_gate.py data.csv --text-column text --label-column label --group-column worker_id --output proofgate-report.json
+```
+
+Отчёт показывает `ACCEPT`, `REJECT` или `INCONCLUSIVE`, параметры решения и SHA-256 для данных, строк split и самого отчёта. `INCONCLUSIVE` — это не приёмка. Один holdout не является независимым final test; не подгоняй настройки многократно под него. См. [`docs/PROOFGATE_LIMITATIONS.md`](docs/PROOFGATE_LIMITATIONS.md) перед интерпретацией результата.
 
 ## Команды проверки
 
