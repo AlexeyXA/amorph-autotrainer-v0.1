@@ -104,6 +104,21 @@ def test_golden_length_mismatch_is_inconclusive_conformance_failure():
     assert report.to_legacy_gate_dict()["passed"] is False
 
 
+def test_prediction_label_absent_from_gate_truth_is_inconclusive():
+    y = _balanced_labels()
+    baseline = y.copy()
+    candidate = y.copy()
+    candidate[0] = "class-not-observed-in-gate"
+
+    report = evaluate(y, baseline, candidate, n_bootstrap=100)
+
+    assert report.verdict == Verdict.INCONCLUSIVE
+    assert report.subtype == "CONFORMANCE_FAILED"
+    assert "pred_candidate_contains_label_absent_from_y_gate" in report.reason_codes
+    assert report.comparison is None
+    assert report.to_legacy_gate_dict()["passed"] is False
+
+
 def test_no_candidate_is_baseline_only_inconclusive():
     y = _balanced_labels()
     baseline = y.copy()
