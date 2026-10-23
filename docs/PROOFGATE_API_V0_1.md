@@ -72,7 +72,7 @@ Input JSON shape:
 
 Do not use that four-row illustrative sample with the default five-examples-per-class floor as evidence of a powered result; the example only shows the JSON schema.
 
-## AMORPH manifest and replay mapping (Phase C dual-write)
+## AMORPH manifest and replay mapping (Phase C cut-over)
 
 | AMORPH field / artifact | Meaning after cut-over |
 |---|---|
