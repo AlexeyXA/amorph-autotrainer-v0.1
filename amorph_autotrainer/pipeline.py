@@ -16,7 +16,8 @@ import numpy as np
 from .cost import CostConfig, estimate_tco_eur
 from .data import load_records, split_records
 from .experiment_db import ExperimentDB
-from .metrics import classification_metrics, gate_candidate, paired_stratified_bootstrap_macro_f1
+from .metrics import classification_metrics
+from .proofgate import PROOFGATE_VERSION, Verdict, evaluate as evaluate_proofgate
 from .strategies import E5Candidate, HybridTfidfE5Candidate, TfidfCandidate, FittedCandidate
 from .strategy_abi import build_replay_descriptor, run_conformance_checks
 
@@ -322,32 +323,55 @@ def run_training(
         return candidate.model.predict(texts)
 
     # Independent acceptance-gate split: never used for strategy selection or final reporting.
+    # Proof Gate is the single source of truth for verdicts; the pipeline only adapts
+    # its structured report to the legacy manifest/database fields.
     gate_baseline_pred = predict_candidate(baseline, "tfidf", bundle.gate_texts)
     gate_selected_pred = predict_candidate(selected, selected_name, bundle.gate_texts)
-    baseline_gate_metrics = classification_metrics(bundle.gate_labels, gate_baseline_pred)
-    selected_gate_metrics = classification_metrics(bundle.gate_labels, gate_selected_pred)
-    comparison = paired_stratified_bootstrap_macro_f1(
-        bundle.gate_labels, gate_baseline_pred, gate_selected_pred,
-        n_bootstrap=config.bootstrap_samples, seed=config.random_seed,
+    gate_split_sha256 = (
+        bundle.report.get("splits", {}).get("acceptance_gate", {}).get("sha256")
     )
-    selected_gate = gate_candidate(
-        selected_gate_metrics,
-        baseline_gate_metrics,
-        comparison,
-        min_macro_f1=config.min_macro_f1,
-        noninferiority_margin=config.noninferiority_margin,
+    proofgate_metadata = {
+        "run_id": run_id,
+        "dataset_sha256": dataset_hash,
+        "gate_split_sha256": gate_split_sha256,
+        "seed": config.random_seed,
+        "baseline_strategy": "tfidf",
+        "selected_strategy": selected_name,
+    }
+    proofgate_criteria = {
+        "margin": config.noninferiority_margin,
+        "n_bootstrap": config.bootstrap_samples,
+        "seed": config.random_seed,
+        "min_examples_per_class": config.min_gate_examples_per_class,
+        "min_macro_f1": config.min_macro_f1,
+    }
+    selected_proofgate = evaluate_proofgate(
+        bundle.gate_labels,
+        gate_baseline_pred,
+        gate_selected_pred,
+        metadata=proofgate_metadata,
+        **proofgate_criteria,
     )
+    baseline_proofgate = evaluate_proofgate(
+        bundle.gate_labels,
+        gate_baseline_pred,
+        gate_baseline_pred,
+        metadata={**proofgate_metadata, "selected_strategy": "tfidf", "comparison_role": "baseline_reference"},
+        **proofgate_criteria,
+    )
+    selected_proofgate_payload = selected_proofgate.to_dict()
+    baseline_proofgate_payload = baseline_proofgate.to_dict()
+    proofgate_dir = root / "proofgate"
+    proofgate_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(proofgate_dir / "selected_candidate.json", selected_proofgate_payload)
+    _write_json(proofgate_dir / "baseline_reference.json", baseline_proofgate_payload)
 
-    baseline_gate = gate_candidate(
-        baseline_gate_metrics,
-        baseline_gate_metrics,
-        paired_stratified_bootstrap_macro_f1(
-            bundle.gate_labels, gate_baseline_pred, gate_baseline_pred,
-            n_bootstrap=config.bootstrap_samples, seed=config.random_seed,
-        ),
-        min_macro_f1=config.min_macro_f1,
-        noninferiority_margin=config.noninferiority_margin,
-    )
+    # Pull aggregate metrics and decisions from Proof Gate, avoiding a second
+    # independent implementation of the acceptance rule in pipeline.py.
+    baseline_gate_metrics = baseline_proofgate.baseline_metrics or {}
+    selected_gate_metrics = selected_proofgate.candidate_metrics
+    selected_gate = selected_proofgate.to_legacy_gate_dict()
+    baseline_gate = baseline_proofgate.to_legacy_gate_dict()
 
     gate_class_counts = {
         str(label): int(np.sum(bundle.gate_labels == label))
@@ -367,9 +391,12 @@ def run_training(
 
     # Selection/rollback decisions use only validation and acceptance-gate data.
     # The untouched test split is evaluated only after final_name has been fixed.
-    candidate_accepted = selected_gate["passed"]
-    if selected_name == "tfidf":
-        candidate_accepted = baseline_gate["passed"]
+    # An INCONCLUSIVE verdict is never converted into acceptance by rollback.
+    # Selecting the baseline itself has no challenger and therefore is not ACCEPT.
+    candidate_accepted = (
+        selected_proofgate.verdict == Verdict.ACCEPT
+        and selected_name != "tfidf"
+    )
     if candidate_accepted:
         final_name = selected_name
         final_gate = selected_gate if selected_name != "tfidf" else baseline_gate
@@ -384,6 +411,12 @@ def run_training(
     )
     if not gate_sufficient:
         final_status = "acceptance_gate_underpowered"
+    elif selected_name != "tfidf" and selected_proofgate.verdict == Verdict.INCONCLUSIVE:
+        final_status = (
+            "acceptance_gate_conformance_failed"
+            if selected_proofgate.subtype == "CONFORMANCE_FAILED"
+            else "acceptance_gate_inconclusive"
+        )
     elif absolute_target_passed is False:
         final_status = "target_not_met"
     elif selected_name != final_name:
@@ -444,6 +477,7 @@ def run_training(
     protocol_status = {
         "strategy_abi": "implemented",
         "conformance_gate": "implemented",
+        "proof_gate": "implemented",
         "gate_row_count_constraints": (
             "enforced_by_milp"
             if bundle.report.get("group_split_optimizer") is not None
@@ -467,6 +501,13 @@ def run_training(
             "config": json.loads(config_json),
             "strategy_conformance": strategy_conformance,
             "split_gate_design": bundle.report.get("gate_design", {}),
+            "proofgate": {
+                "version": PROOFGATE_VERSION,
+                "selected_candidate_report_sha256": selected_proofgate_payload["report_sha256"],
+                "baseline_reference_report_sha256": baseline_proofgate_payload["report_sha256"],
+                "selected_candidate_verdict": selected_proofgate.verdict,
+                "selected_candidate_subtype": selected_proofgate.subtype,
+            },
         },
     )
     _write_json(root / "replay.json", replay_descriptor)
@@ -481,7 +522,7 @@ def run_training(
     )
     if selected_gate_scope == "baseline_self_comparison":
         warnings.append(
-            "Acceptance gate compared TF-IDF with itself; a zero delta and CI [0, 0] are tautological and do not demonstrate improvement."
+            "Acceptance gate compared TF-IDF with itself; Proof Gate records this as inconclusive and does not calculate a synthetic zero-width confidence interval."
         )
         if not validation_eligible_challengers:
             warnings.append(
@@ -540,6 +581,18 @@ def run_training(
         "strategy_status": strategy_status,
         "protocol_status": protocol_status,
         "conformance_gate": strategy_conformance,
+        "proofgate": {
+            "version": PROOFGATE_VERSION,
+            "schema_version": selected_proofgate_payload["schema_version"],
+            "selected_candidate_report": "proofgate/selected_candidate.json",
+            "selected_candidate_verdict": selected_proofgate.verdict,
+            "selected_candidate_subtype": selected_proofgate.subtype,
+            "selected_candidate_report_sha256": selected_proofgate_payload["report_sha256"],
+            "baseline_reference_report": "proofgate/baseline_reference.json",
+            "baseline_reference_verdict": baseline_proofgate.verdict,
+            "baseline_reference_subtype": baseline_proofgate.subtype,
+            "baseline_reference_report_sha256": baseline_proofgate_payload["report_sha256"],
+        },
         "replay_descriptor_path": "replay.json",
         "replay_descriptor": replay_descriptor,
         "validation_metrics_all_candidates": val_metrics,
@@ -726,6 +779,7 @@ def run_training(
         "selected_candidate_test_metrics": selected_test_metrics,
         "acceptance_gate": selected_gate,
         "final_acceptance_gate": final_gate,
+        "proofgate": manifest["proofgate"],
         "candidate_errors": candidate_errors,
         "warnings": warnings,
         "acceptance_gate_comparison": manifest["acceptance_gate_comparison"],
