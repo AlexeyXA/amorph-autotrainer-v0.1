@@ -25,6 +25,18 @@ PROOFGATE_VERSION = "0.1.0"
 REPORT_SCHEMA_VERSION = "proofgate.report.v1"
 
 
+def _finite_real(value: Any, name: str) -> float:
+    """Accept real numeric values only; reject bools and numeric-looking strings."""
+    if isinstance(value, (bool, np.bool_)) or not isinstance(
+        value, (int, float, np.integer, np.floating)
+    ):
+        raise ValueError(f"{name} must be a finite real number")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be a finite real number")
+    return number
+
+
 class Verdict:
     """String constants for the only three top-level Proof Gate decisions."""
 
@@ -226,38 +238,55 @@ def evaluate(
     """
     if metric != "macro_f1":
         raise ValueError("Proof Gate v0.1 supports metric='macro_f1' only")
-    if not math.isfinite(float(margin)) or float(margin) < 0:
-        raise ValueError("margin must be a finite number >= 0")
+    margin_value = _finite_real(margin, "margin")
+    if margin_value < 0:
+        raise ValueError("margin must be >= 0")
+    confidence_value = _finite_real(confidence, "confidence")
+    if not 0 < confidence_value < 1:
+        raise ValueError("confidence must be strictly between 0 and 1")
+    target_value = None if min_macro_f1 is None else _finite_real(min_macro_f1, "min_macro_f1")
+    if target_value is not None and not 0 <= target_value <= 1:
+        raise ValueError("min_macro_f1 must be None or a value in [0, 1]")
     if not isinstance(n_bootstrap, int) or isinstance(n_bootstrap, bool) or n_bootstrap < 100:
         raise ValueError("n_bootstrap must be an integer >= 100")
     if not isinstance(seed, int) or isinstance(seed, bool):
         raise ValueError("seed must be an integer")
     if not isinstance(min_examples_per_class, int) or isinstance(min_examples_per_class, bool) or min_examples_per_class < 1:
         raise ValueError("min_examples_per_class must be an integer >= 1")
-    if min_macro_f1 is not None and (
-        not math.isfinite(float(min_macro_f1)) or not 0 <= float(min_macro_f1) <= 1
-    ):
-        raise ValueError("min_macro_f1 must be None or a finite value in [0, 1]")
-    if not math.isfinite(float(confidence)) or not 0 < float(confidence) < 1:
-        raise ValueError("confidence must be a finite number strictly between 0 and 1")
 
     criteria = {
         "metric": metric,
-        "margin": float(margin),
+        "margin": margin_value,
         "n_bootstrap": n_bootstrap,
         "seed": seed,
         "min_examples_per_class": min_examples_per_class,
-        "min_macro_f1": None if min_macro_f1 is None else float(min_macro_f1),
-        "confidence": float(confidence),
+        "min_macro_f1": target_value,
+        "confidence": confidence_value,
     }
     metadata_dict = dict(metadata or {})
     input_sha256, input_hashes = _fingerprint_inputs(
         y_gate, pred_baseline, pred_candidate, criteria, metadata_dict
     )
 
-    raw_y = np.asarray(y_gate)
-    raw_baseline = np.asarray(pred_baseline)
-    raw_candidate = None if pred_candidate is None else np.asarray(pred_candidate)
+    array_conversion_errors: list[str] = []
+    try:
+        raw_y = np.asarray(y_gate)
+    except (TypeError, ValueError):
+        raw_y = np.asarray([], dtype=object)
+        array_conversion_errors.append("y_gate_array_conversion_failed")
+    try:
+        raw_baseline = np.asarray(pred_baseline)
+    except (TypeError, ValueError):
+        raw_baseline = np.asarray([], dtype=object)
+        array_conversion_errors.append("pred_baseline_array_conversion_failed")
+    if pred_candidate is None:
+        raw_candidate = None
+    else:
+        try:
+            raw_candidate = np.asarray(pred_candidate)
+        except (TypeError, ValueError):
+            raw_candidate = np.asarray([], dtype=object)
+            array_conversion_errors.append("pred_candidate_array_conversion_failed")
     n = int(raw_y.shape[0]) if raw_y.ndim == 1 else 0
     counts: dict[str, int] = _class_counts(raw_y) if raw_y.ndim == 1 else {}
 
@@ -294,7 +323,7 @@ def evaluate(
 
     # Array shape and conformance checks are fail-closed and return a report rather
     # than raising, so callers can archive the failure evidence.
-    shape_errors: list[str] = []
+    shape_errors: list[str] = list(array_conversion_errors)
     if raw_y.ndim != 1:
         shape_errors.append("y_gate_must_be_one_dimensional")
     if raw_baseline.ndim != 1:
@@ -409,14 +438,14 @@ def evaluate(
             candidate,
             n_bootstrap=n_bootstrap,
             seed=seed,
-            confidence=confidence,
+            confidence=confidence_value,
         )
         legacy = gate_candidate(
             candidate_metrics,
             baseline_metrics,
             comparison,
-            min_macro_f1=min_macro_f1,
-            noninferiority_margin=float(margin),
+            min_macro_f1=target_value,
+            noninferiority_margin=margin_value,
         )
     except (TypeError, ValueError) as exc:
         reason = f"comparison_failed:{type(exc).__name__}"
