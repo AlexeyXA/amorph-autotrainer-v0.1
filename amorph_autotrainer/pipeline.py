@@ -334,8 +334,7 @@ def run_training(
         return candidate.model.predict(texts)
 
     # Independent acceptance-gate split: never used for strategy selection or final reporting.
-    # Phase C dual-write: keep the legacy decision path active while recording a
-    # shadow Proof Gate report for parity review. Cut-over is a separate later PR.
+    # Phase C2 cut-over: Proof Gate owns the decision; legacy is audit-only.
     gate_baseline_pred = predict_candidate(baseline, "tfidf", bundle.gate_texts)
     gate_selected_pred = predict_candidate(selected, selected_name, bundle.gate_texts)
     gate_split_sha256 = (
@@ -597,9 +596,18 @@ def run_training(
         else "selected_candidate_vs_baseline"
     )
     if selected_gate_scope == "baseline_self_comparison":
-        warnings.append(
-            "Proof Gate marked the TF-IDF self-comparison INCONCLUSIVE; no synthetic zero-width confidence interval was generated and the baseline is retained without claiming gate acceptance."
-        )
+        if selected_proofgate.subtype == "UNDERPOWERED":
+            warnings.append(
+                "Proof Gate returned INCONCLUSIVE / UNDERPOWERED for the TF-IDF baseline reference; no confidence interval was generated and gate acceptance is not claimed."
+            )
+        elif selected_proofgate.subtype == "CONFORMANCE_FAILED":
+            warnings.append(
+                "Proof Gate returned INCONCLUSIVE / CONFORMANCE_FAILED for the TF-IDF baseline reference; the baseline is retained without claiming gate acceptance."
+            )
+        else:
+            warnings.append(
+                "Proof Gate marked the TF-IDF self-comparison INCONCLUSIVE; no synthetic zero-width confidence interval was generated and the baseline is retained without claiming gate acceptance."
+            )
         if not validation_eligible_challengers:
             warnings.append(
                 "No challenger passed the validation threshold; no non-baseline strategy was compared with TF-IDF by the acceptance gate."
