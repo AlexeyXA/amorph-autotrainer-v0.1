@@ -1,7 +1,9 @@
 # Variant 3 plan: Proof Gate extraction (AMORPH → thin library)
 
 **Owner decision context:** Prefer evidence/acceptance primitives over “another AutoML”.
-**Status:** Plan only (2026-10-23). Not implemented as a separate package yet.
+**Status (2026-10-23):** Phases **A–D implemented on `main`**. Not a separate PyPI package yet; lives as `amorph_autotrainer.proofgate`.
+
+See also: `docs/READINESS.md`, `docs/PROOFGATE_LIMITATIONS.md`, `docs/PROOFGATE_API_V0_1.md`.
 
 ## One-liner
 
@@ -10,20 +12,20 @@ Accept baseline preds + candidate preds + gate labels (+ criteria) →
 
 **Does not train models. Does not select strategies. Does not replace TRL/PEFT.**
 
-## Already in AMORPH (inventory to extract)
+## Already in AMORPH (inventory)
 
 | Piece | Location (approx.) | Extract v0.1? |
 |-------|--------------------|---------------|
-| Paired bootstrap / non-inferiority | `metrics.py` (`gate_candidate`, bootstrap) | **yes** |
-| Underpowered floor | pipeline + config `min_gate_examples_per_class` | **yes** |
-| Honest statuses (`baseline_self_comparison`, …) | pipeline | **yes** |
-| Conformance (type/length/ndim) | `strategy_abi.py` | **yes** |
-| Replay / hashes | `strategy_abi.build_replay_descriptor`, manifest | **yes** |
-| MILP group split | `data.py` | **no** (v0.2 optional) |
+| Paired bootstrap / non-inferiority | `metrics.py` + `proofgate` | **yes — done** |
+| Underpowered floor | config + proofgate | **yes — done** |
+| Honest statuses | pipeline + proofgate | **yes — done** |
+| Conformance (type/length/ndim) | strategy_abi + proofgate | **yes — done** |
+| Replay / hashes | replay + proofgate reports | **yes — done** |
+| MILP group split | `data.py` | **no** (stays AutoTrainer) |
 | TF-IDF / E5 / hybrid train | `strategies.py` | **no** |
 | TCO selector | `pipeline.py` / `cost.py` | **no** |
 
-## v0.1 API (freeze before code)
+## v0.1 API
 
 ```text
 proofgate.evaluate(
@@ -46,53 +48,46 @@ proofgate.evaluate(
 | `ACCEPT` | Gate powered; candidate non-inferior (and absolute target if set) |
 | `REJECT` | Gate powered; candidate fails criteria |
 | `INCONCLUSIVE` | Underpowered **or** conformance fail **or** no real challenger |
-| `BASELINE_ONLY` / self-comparison | Optional subtype of INCONCLUSIVE — **never** market as ACCEPT |
 
-Non-inferiority boundary: document **exact** code rule (AMORPH: inclusive `ci_lower >= -margin` if that is still true).
+Non-inferiority boundary: inclusive `ci_lower >= -margin`.
 
 ## Phases
 
-### A — Spec (2 days)
-- [ ] This RFC stable
-- [ ] 5 golden synthetic cases: ACCEPT / REJECT / underpowered / self-comparison / length mismatch
-- [ ] Field map: AMORPH manifest ↔ `GateReport`
+### A — Spec — **done**
+- [x] RFC / plan
+- [x] Golden synthetic cases
+- [x] Field map AMORPH ↔ GateReport (`docs/PROOFGATE_API_V0_1.md`)
 
-### B — Module inside repo first (1 week)
-- [ ] `amorph_autotrainer/proofgate/` or top-level `src/proofgate/` with **zero** imports from strategies/data train path
-- [ ] Move/wrap bootstrap + gate + conformance + report writer
-- [ ] `pytest` golden cases
-- [ ] CLI: preds + labels in → `report.json`
+### B — Module — **done** (PR #10)
+- [x] `amorph_autotrainer/proofgate/`
+- [x] bootstrap + evaluate + report writer
+- [x] pytest golden cases
+- [x] CLI: `python -m amorph_autotrainer.proofgate`
 
-### C — Single source of truth (3–5 days)
-- [ ] AMORPH pipeline calls the same `evaluate()`
-- [ ] Full AMORPH pytest green; no dual gate logic
+### C — Single source of truth — **done** (PR #13 C1, PR #14 C2)
+- [x] Dual-write then cut-over
+- [x] Pipeline decisions from `proofgate.evaluate`
+- [x] Legacy parity audit (shared helpers — wiring check, not independent stats)
+- [x] Self-comparison never ACCEPT
 
-### D — External example (3–5 days)
-- [ ] `examples/sklearn_holdout_gate.py` (train outside AMORPH)
-- [ ] `docs/PROOFGATE_LIMITATIONS.md`
+### D — External example — **done** (PR #15)
+- [x] `examples/sklearn_holdout_gate.py`
+- [x] `docs/PROOFGATE_LIMITATIONS.md`
 
-### E — Later (not now)
-- Slice/group degradation, ECE, leakage helpers, optional split extra
-- Separate PyPI package name only after C+D stable
+### E — Later (optional, not v0.1 freeze)
+- [ ] Slice/group degradation, ECE, leakage helpers
+- [ ] Separate PyPI package name
+- [ ] Multi-seed promotion protocol for experimental strategies
 
-## Explicit non-goals (agents must not do these in the same PR)
+## Explicit non-goals (still)
 
-- New embedders (BGE/GTE) or more hybrids
+- New embedders (BGE/GTE) without owner ask
 - Changing E5 production defaults
-- Merging draft experiment PR #4
-- LLM-as-judge / alignment forgetting harness (Variant 1)
-- NCA benchmark suite (Variant 2)
+- Merging draft experiment PR #4 into defaults
+- LLM-as-judge / alignment harness
 
-## Success criteria
+## Remaining for “owner-ready”
 
-| Horizon | Criterion |
-|---------|-----------|
-| 2 weeks | Shared gate module; AMORPH tests green; golden verdicts pass |
-| 1 month | External sklearn example + public report artifact |
-| Adoption | Optional; honesty > hype |
-
-## Agent assignment (GPT)
-
-**Single next PR only:** Phase A+B start — `docs` already has this plan; implement `proofgate` module + golden tests; wire or dual-call from pipeline without behavior change on synthetic suite.
-
-Report in issue #1 with `[GPT]`, commit SHA, CI URL. If blocked, say **Blocked:** with reason — do not go silent.
+1. Owner domain CSV run (`amorph-autotrainer train` or sklearn example) with artifact retention
+2. Appropriate `group_id` when rows correlate
+3. Read real Proof Gate verdict; do not treat `INCONCLUSIVE` as pass
