@@ -1,4 +1,4 @@
-"""Pure-Python paired bootstrap gate for the OASST1 SFT proof-of-concept."""
+"""Paired bootstrap gate for OASST1 SFT; duplicate groups fail closed."""
 from __future__ import annotations
 
 import math
@@ -16,11 +16,15 @@ def paired_group_bootstrap(
         raise ValueError("samples must be >= 100")
     if margin < 0 or minimum_groups < 1:
         raise ValueError("margin must be >= 0 and minimum_groups must be >= 1")
-    base_by_tree = {row["tree_id"]: float(row["nll"]) for row in baseline}
-    cand_by_tree = {row["tree_id"]: float(row["nll"]) for row in candidate}
-    common = sorted(set(base_by_tree) & set(cand_by_tree))
-    if len(common) != len(base_by_tree) or len(common) != len(cand_by_tree):
+    base_ids = [str(row["tree_id"]) for row in baseline]
+    cand_ids = [str(row["tree_id"]) for row in candidate]
+    if len(base_ids) != len(set(base_ids)) or len(cand_ids) != len(set(cand_ids)):
+        raise ValueError("Duplicate conversation tree IDs are not independent observations")
+    base_by_tree = {str(row["tree_id"]): float(row["nll"]) for row in baseline}
+    cand_by_tree = {str(row["tree_id"]): float(row["nll"]) for row in candidate}
+    if set(base_by_tree) != set(cand_by_tree):
         raise ValueError("Baseline and candidate examples must have identical tree IDs")
+    common = sorted(base_by_tree)
     if any(not math.isfinite(base_by_tree[k]) or not math.isfinite(cand_by_tree[k]) for k in common):
         raise ValueError("NLL values must be finite")
     deltas = [cand_by_tree[key] - base_by_tree[key] for key in common]

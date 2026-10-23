@@ -19,7 +19,7 @@ from datasets import load_dataset
 from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments
 
-from experiments.llm_sft_oasst1.data import cap_split, encode_pairs, prepare_ru_pairs, split_by_tree
+from experiments.llm_sft_oasst1.data import encode_split_up_to_cap, prepare_ru_pairs, split_by_tree
 from experiments.llm_sft_oasst1.gate import paired_group_bootstrap
 
 DATASET_ID = "OpenAssistant/oasst1"
@@ -147,11 +147,6 @@ def main() -> int:
         "gate": args.max_gate_examples,
         "test": args.max_test_examples,
     }
-    split_pairs = {
-        name: cap_split(raw_splits[name], limit=caps[name], seed=args.seed, split_name=name)
-        for name in caps
-    }
-
     print("[2/7] Loading pinned Qwen model and tokenizer on CPU", flush=True)
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, revision=MODEL_REVISION, use_fast=True)
     if tokenizer.pad_token_id is None:
@@ -165,14 +160,12 @@ def main() -> int:
     print("[3/7] Encoding pairs; prompt tokens are masked from loss", flush=True)
     encoded: dict[str, list[dict[str, Any]]] = {}
     split_counts: dict[str, Any] = {}
-    for name, group in split_pairs.items():
-        encoded[name], dropped = encode_pairs(group, tokenizer, max_length=args.max_length)
-        split_counts[name] = {
-            "tree_groups_before_length_filter": len(group),
-            "encoded_examples": len(encoded[name]),
-            "dropped_overlength_or_empty_answer": dropped,
-            "encoded_unique_trees": len({r["tree_id"] for r in encoded[name]}),
-        }
+    for name, group in raw_splits.items():
+        encoded[name], split_stats = encode_split_up_to_cap(
+            group, tokenizer, limit=caps[name], max_length=args.max_length,
+            seed=args.seed, split_name=name,
+        )
+        split_counts[name] = split_stats
     if len(encoded["train"]) < 8 or len(encoded["validation"]) < 4 or len(encoded["test"]) < 4:
         raise RuntimeError(f"Insufficient encoded split support: {split_counts}")
 
@@ -183,7 +176,7 @@ def main() -> int:
         "split_counts": split_counts,
         "seed": args.seed,
         "max_length": args.max_length,
-        "split_policy": "one prompter-assistant pair per message_tree_id; deterministic 70/10/10/10 group split",
+        "split_policy": "exact normalized prompt dedup across conversation trees; deterministic 70/10/10/10 tree-disjoint split; length-eligible samples capped only within their assigned split",
         "selected_pair_identifiers_sha256": hashlib.sha256(json.dumps(identifiers).encode("utf-8")).hexdigest(),
         "model_id": MODEL_ID,
         "model_revision": MODEL_REVISION,

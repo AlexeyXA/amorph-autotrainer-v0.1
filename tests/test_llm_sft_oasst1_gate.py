@@ -47,6 +47,14 @@ def test_gate_rejects_mismatched_tree_ids():
         paired_group_bootstrap(base, cand, seed=1, samples=200, margin=0.02, minimum_groups=20)
 
 
+def test_gate_rejects_duplicate_tree_ids():
+    base, cand = _pairs([-0.1] * 20)
+    base.append(dict(base[0]))
+    cand.append(dict(cand[0]))
+    with pytest.raises(ValueError, match="Duplicate conversation tree"):
+        paired_group_bootstrap(base, cand, seed=1, samples=200, margin=0.02, minimum_groups=20)
+
+
 def test_gate_rejects_non_finite_nll():
     base, cand = _pairs([-0.1] * 20)
     cand[0]["nll"] = float("nan")

@@ -1,4 +1,6 @@
-from experiments.llm_sft_oasst1.data import cap_split, prepare_ru_pairs, split_by_tree
+from experiments.llm_sft_oasst1.data import (
+    cap_split, encode_pairs, encode_split_up_to_cap, prepare_ru_pairs, split_by_tree,
+)
 
 
 def _row(mid, parent, role, tree, text, *, lang="ru", review=True, deleted=False, synthetic=False):
@@ -25,13 +27,29 @@ def test_pairs_are_russian_reviewed_non_synthetic_and_one_per_tree():
         _row("a-en", "u-en", "assistant", "tree-en", "Hi", lang="en"),
         _row("u-bad", None, "prompter", "tree-bad", "Вопрос плохой"),
         _row("a-bad", "u-bad", "assistant", "tree-bad", "Ответ плохой", review=False),
-        _row("u-synth", None, "prompter", "tree-synth", "Синтетический вопрос"),
-        _row("a-synth", "u-synth", "assistant", "tree-synth", "Синтетический ответ", synthetic=True),
+        _row("u-synth-answer", None, "prompter", "tree-synth-answer", "Вопрос синтетического ответа"),
+        _row("a-synth-answer", "u-synth-answer", "assistant", "tree-synth-answer", "Ответ синтетический", synthetic=True),
+        _row("u-synth-parent", None, "prompter", "tree-synth-parent", "Синтетический prompt", synthetic=True),
+        _row("a-synth-parent", "u-synth-parent", "assistant", "tree-synth-parent", "Ответ на синтетический prompt"),
+        _row("u-unreviewed-parent", None, "prompter", "tree-unreviewed-parent", "Непроверенный prompt", review=False),
+        _row("a-unreviewed-parent", "u-unreviewed-parent", "assistant", "tree-unreviewed-parent", "Ответ на непроверенный prompt"),
     ]
     pairs, audit = prepare_ru_pairs(rows, seed=9)
     assert len(pairs) == 100
     assert len({p["tree_id"] for p in pairs}) == len(pairs)
-    assert audit["selected_pairs_one_per_tree"] == 100
+    assert audit["selected_pairs_one_per_tree_and_exact_prompt"] == 100
+    assert audit["selected_conversation_trees_before_prompt_dedup"] == 100
+
+
+def test_exact_normalized_prompts_are_deduplicated_across_trees():
+    rows = _rows(10) + [
+        _row("u-dup", None, "prompter", "tree-duplicate", "  ВОПРОС   3  "),
+        _row("a-dup", "u-dup", "assistant", "tree-duplicate", "Другой ответ"),
+    ]
+    pairs, audit = prepare_ru_pairs(rows, seed=42)
+    prompt_keys = [" ".join(p["prompt"].casefold().split()) for p in pairs]
+    assert len(prompt_keys) == len(set(prompt_keys))
+    assert audit["exact_normalized_prompt_duplicates_removed"] == 1
 
 
 def test_splits_are_deterministic_and_tree_disjoint():
@@ -56,8 +74,6 @@ def test_cap_is_stable():
 
 
 def test_tokenization_masks_prompt_and_keeps_response_labels():
-    from experiments.llm_sft_oasst1.data import encode_pairs
-
     class FakeTokenizer:
         def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
             prompt = [101, len(messages[0]["content"])]
@@ -72,6 +88,29 @@ def test_tokenization_masks_prompt_and_keeps_response_labels():
     assert dropped == 0
     assert examples[0]["labels"][:2] == [-100, -100]
     assert examples[0]["labels"][2:] == [202, 2, 2]
+
+
+def test_split_encoder_scans_past_overlength_rows_without_cross_split_reassignment():
+    class FakeTokenizer:
+        def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
+            content = messages[0]["content"]
+            if len(messages) == 1 and add_generation_prompt:
+                return [101] + [7] * len(content)
+            return [101] + [7] * len(content) + [202, 9, 2]
+
+    pairs = [
+        {"tree_id": "long-1", "prompt": "long prompt", "response": "ok"},
+        {"tree_id": "short-1", "prompt": "q", "response": "a"},
+        {"tree_id": "long-2", "prompt": "long prompt", "response": "ok"},
+        {"tree_id": "short-2", "prompt": "q2", "response": "a"},
+    ]
+    encoded, stats = encode_split_up_to_cap(
+        pairs, FakeTokenizer(), limit=2, max_length=5, seed=4, split_name="train"
+    )
+    assert len(encoded) == 2
+    assert stats["candidate_trees_scanned"] >= 2
+    assert stats["encoded_examples"] == 2
+    assert len({r["tree_id"] for r in encoded}) == 2
 
 
 def test_conflicting_duplicate_message_id_is_removed():
