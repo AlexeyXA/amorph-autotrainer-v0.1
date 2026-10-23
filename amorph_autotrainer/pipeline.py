@@ -17,6 +17,7 @@ from .cost import CostConfig, estimate_tco_eur
 from .data import load_records, split_records
 from .experiment_db import ExperimentDB
 from .metrics import classification_metrics, gate_candidate, paired_stratified_bootstrap_macro_f1
+from .proofgate import PROOFGATE_VERSION, Verdict, evaluate as evaluate_proofgate
 from .strategies import E5Candidate, HybridTfidfE5Candidate, TfidfCandidate, FittedCandidate
 from .strategy_abi import build_replay_descriptor, run_conformance_checks
 
@@ -322,8 +323,53 @@ def run_training(
         return candidate.model.predict(texts)
 
     # Independent acceptance-gate split: never used for strategy selection or final reporting.
+    # Phase C dual-write: keep the legacy decision path active while recording a
+    # shadow Proof Gate report for parity review. Cut-over is a separate later PR.
     gate_baseline_pred = predict_candidate(baseline, "tfidf", bundle.gate_texts)
     gate_selected_pred = predict_candidate(selected, selected_name, bundle.gate_texts)
+    gate_split_sha256 = (
+        bundle.report.get("splits", {}).get("acceptance_gate", {}).get("sha256")
+    )
+    proofgate_metadata = {
+        "run_id": run_id,
+        "dataset_sha256": dataset_hash,
+        "gate_split_sha256": gate_split_sha256,
+        "seed": config.random_seed,
+        "baseline_strategy": "tfidf",
+        "selected_strategy": selected_name,
+        "mode": "shadow",
+    }
+    proofgate_criteria = {
+        "margin": config.noninferiority_margin,
+        "n_bootstrap": config.bootstrap_samples,
+        "seed": config.random_seed,
+        "min_examples_per_class": config.min_gate_examples_per_class,
+        "min_macro_f1": config.min_macro_f1,
+    }
+    selected_proofgate = evaluate_proofgate(
+        bundle.gate_labels,
+        gate_baseline_pred,
+        gate_selected_pred,
+        metadata=proofgate_metadata,
+        **proofgate_criteria,
+    )
+    baseline_proofgate = evaluate_proofgate(
+        bundle.gate_labels,
+        gate_baseline_pred,
+        gate_baseline_pred,
+        metadata={**proofgate_metadata, "selected_strategy": "tfidf", "comparison_role": "baseline_reference"},
+        **proofgate_criteria,
+    )
+    selected_proofgate_payload = selected_proofgate.to_dict()
+    baseline_proofgate_payload = baseline_proofgate.to_dict()
+    proofgate_dir = root / "proofgate"
+    proofgate_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(proofgate_dir / "selected_candidate.json", selected_proofgate_payload)
+    _write_json(proofgate_dir / "baseline_reference.json", baseline_proofgate_payload)
+
+    # Existing behavior remains the active decision source during dual-write.
+    # Proof Gate verdicts are compared with this outcome, but never select/rollback
+    # a strategy in this PR.
     baseline_gate_metrics = classification_metrics(bundle.gate_labels, gate_baseline_pred)
     selected_gate_metrics = classification_metrics(bundle.gate_labels, gate_selected_pred)
     comparison = paired_stratified_bootstrap_macro_f1(
@@ -337,7 +383,6 @@ def run_training(
         min_macro_f1=config.min_macro_f1,
         noninferiority_margin=config.noninferiority_margin,
     )
-
     baseline_gate = gate_candidate(
         baseline_gate_metrics,
         baseline_gate_metrics,
@@ -365,7 +410,25 @@ def run_training(
             gate_result["passed"] = False
             gate_result.setdefault("reasons", []).append("acceptance_gate_underpowered")
 
+    if not gate_sufficient:
+        proofgate_shadow_parity = "not_comparable_underpowered"
+    elif selected_proofgate.subtype == "CONFORMANCE_FAILED":
+        proofgate_shadow_parity = "not_comparable_conformance_failed"
+    elif selected_proofgate.subtype == "SELF_COMPARISON":
+        proofgate_shadow_parity = "intentional_inconclusive_self_comparison"
+    elif selected_proofgate.subtype == "BASELINE_ONLY":
+        proofgate_shadow_parity = "intentional_inconclusive_no_challenger"
+    elif selected_proofgate.verdict in (Verdict.ACCEPT, Verdict.REJECT):
+        legacy_verdict = "ACCEPT" if selected_gate["passed"] else "REJECT"
+        proofgate_shadow_parity = (
+            "match" if selected_proofgate.verdict == legacy_verdict else "mismatch"
+        )
+    else:
+        proofgate_shadow_parity = "inconclusive_unexpected"
+
     # Selection/rollback decisions use only validation and acceptance-gate data.
+    # During dual-write, preserve the established behavior until parity tests are
+    # reviewed; the shadow verdict does not influence the selected strategy.
     # The untouched test split is evaluated only after final_name has been fixed.
     candidate_accepted = selected_gate["passed"]
     if selected_name == "tfidf":
@@ -378,9 +441,15 @@ def run_training(
         final_gate = baseline_gate
     final_candidate = candidates[final_name]
 
+    final_gate_macro_f1 = final_gate.get("candidate_macro_f1")
     absolute_target_passed = (
-        None if config.min_macro_f1 is None or not gate_sufficient
-        else final_gate["candidate_macro_f1"] >= config.min_macro_f1
+        None
+        if (
+            config.min_macro_f1 is None
+            or not gate_sufficient
+            or not isinstance(final_gate_macro_f1, (int, float, np.integer, np.floating))
+        )
+        else float(final_gate_macro_f1) >= config.min_macro_f1
     )
     if not gate_sufficient:
         final_status = "acceptance_gate_underpowered"
@@ -444,6 +513,7 @@ def run_training(
     protocol_status = {
         "strategy_abi": "implemented",
         "conformance_gate": "implemented",
+        "proof_gate": "implemented",
         "gate_row_count_constraints": (
             "enforced_by_milp"
             if bundle.report.get("group_split_optimizer") is not None
@@ -467,9 +537,26 @@ def run_training(
             "config": json.loads(config_json),
             "strategy_conformance": strategy_conformance,
             "split_gate_design": bundle.report.get("gate_design", {}),
+            "proofgate_shadow": {
+                "version": PROOFGATE_VERSION,
+                "selected_candidate_report_sha256": selected_proofgate_payload["report_sha256"],
+                "baseline_reference_report_sha256": baseline_proofgate_payload["report_sha256"],
+                "selected_candidate_verdict": selected_proofgate.verdict,
+                "selected_candidate_subtype": selected_proofgate.subtype,
+                "legacy_selected_gate_passed": selected_gate["passed"],
+                "parity_status": proofgate_shadow_parity,
+            },
         },
     )
     _write_json(root / "replay.json", replay_descriptor)
+    # The selected model directory is exported as a standalone artifact. Mirror
+    # the provenance files referenced by its manifest so relative paths resolve
+    # both from the run root and from the selected artifact directory.
+    _write_json(final_artifact_dir / "replay.json", replay_descriptor)
+    _write_json(final_artifact_dir / "data_report.json", bundle.report)
+    (final_artifact_dir / "proofgate").mkdir(parents=True, exist_ok=True)
+    _write_json(final_artifact_dir / "proofgate" / "selected_candidate.json", selected_proofgate_payload)
+    _write_json(final_artifact_dir / "proofgate" / "baseline_reference.json", baseline_proofgate_payload)
     warnings: list[str] = []
     selected_gate_scope = (
         "baseline_self_comparison" if selected_name == "tfidf"
@@ -481,7 +568,7 @@ def run_training(
     )
     if selected_gate_scope == "baseline_self_comparison":
         warnings.append(
-            "Acceptance gate compared TF-IDF with itself; a zero delta and CI [0, 0] are tautological and do not demonstrate improvement."
+            "Shadow Proof Gate marks the TF-IDF self-comparison INCONCLUSIVE without a synthetic interval; the legacy decision path remains active until the separate cut-over PR."
         )
         if not validation_eligible_challengers:
             warnings.append(
@@ -540,6 +627,23 @@ def run_training(
         "strategy_status": strategy_status,
         "protocol_status": protocol_status,
         "conformance_gate": strategy_conformance,
+        "proofgate": {
+            "mode": "shadow",
+            "decision_source": "legacy_gate_candidate",
+            "cutover_complete": False,
+            "version": PROOFGATE_VERSION,
+            "schema_version": selected_proofgate_payload["schema_version"],
+            "selected_candidate_report": "proofgate/selected_candidate.json",
+            "selected_candidate_verdict": selected_proofgate.verdict,
+            "selected_candidate_subtype": selected_proofgate.subtype,
+            "selected_candidate_report_sha256": selected_proofgate_payload["report_sha256"],
+            "baseline_reference_report": "proofgate/baseline_reference.json",
+            "baseline_reference_verdict": baseline_proofgate.verdict,
+            "baseline_reference_subtype": baseline_proofgate.subtype,
+            "baseline_reference_report_sha256": baseline_proofgate_payload["report_sha256"],
+            "legacy_selected_gate_passed": selected_gate["passed"],
+            "shadow_parity_status": proofgate_shadow_parity,
+        },
         "replay_descriptor_path": "replay.json",
         "replay_descriptor": replay_descriptor,
         "validation_metrics_all_candidates": val_metrics,
@@ -726,6 +830,7 @@ def run_training(
         "selected_candidate_test_metrics": selected_test_metrics,
         "acceptance_gate": selected_gate,
         "final_acceptance_gate": final_gate,
+        "proofgate": manifest["proofgate"],
         "candidate_errors": candidate_errors,
         "warnings": warnings,
         "acceptance_gate_comparison": manifest["acceptance_gate_comparison"],

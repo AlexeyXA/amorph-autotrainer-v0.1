@@ -48,9 +48,30 @@ def test_end_to_end_tfidf_only(tmp_path):
     replay = json.loads(Path(result["run_dir"], "replay.json").read_text(encoding="utf-8"))
     assert replay["format"] == "amorph_replay_descriptor_v1"
     assert replay["descriptor_sha256"] == manifest["replay_descriptor"]["descriptor_sha256"]
-    assert report["status"] in {"accepted", "target_not_met", "baseline_kept_candidate_rejected", "baseline_only", "baseline_self_comparison", "accepted_no_absolute_target", "acceptance_gate_underpowered"}
+    assert report["status"] in {
+        "accepted", "target_not_met", "baseline_kept_candidate_rejected",
+        "baseline_only", "baseline_self_comparison", "accepted_no_absolute_target",
+        "acceptance_gate_underpowered", "acceptance_gate_inconclusive",
+        "acceptance_gate_conformance_failed",
+    }
     assert report["acceptance_gate_comparison"]["selected_candidate_scope"] == "baseline_self_comparison"
-    assert any("compared TF-IDF with itself" in warning for warning in report["warnings"])
+    assert any("Shadow Proof Gate marks the TF-IDF self-comparison INCONCLUSIVE" in warning for warning in report["warnings"])
+    assert report["proofgate"]["version"]
+    assert report["proofgate"]["mode"] == "shadow"
+    assert report["proofgate"]["decision_source"] == "legacy_gate_candidate"
+    assert report["proofgate"]["cutover_complete"] is False
+    proofgate_report = json.loads(
+        (Path(result["run_dir"]) / report["proofgate"]["selected_candidate_report"])
+        .read_text(encoding="utf-8")
+    )
+    assert proofgate_report["verdict"] == "INCONCLUSIVE"
+    assert proofgate_report["subtype"] in {"SELF_COMPARISON", "UNDERPOWERED"}
+    assert proofgate_report["comparison"] is None
+    assert proofgate_report["report_sha256"] == report["proofgate"]["selected_candidate_report_sha256"]
+    # Dual-write intentionally retains the legacy self-comparison pass during
+    # the transition; the shadow Proof Gate correctly refuses to call it ACCEPT.
+    assert report["selected_candidate_gate"]["passed"] is True
+    assert report["proofgate"]["selected_candidate_verdict"] == "INCONCLUSIVE"
     assert report["tco_assumption_status"] == "assumed_free_inputs"
     assert "acceptance_gate_sufficient" in report
     data_report = json.loads((Path(result["run_dir"]) / "data_report.json").read_text(encoding="utf-8"))
@@ -85,6 +106,43 @@ def test_baseline_only_status_is_explicit_when_gate_is_sufficient(tmp_path):
     assert report["status"] == "baseline_only"
     assert report["acceptance_gate_comparison"]["is_self_comparison"] is True
     assert any("No challenger passed the validation threshold" in warning for warning in report["warnings"])
+    proofgate_info = report["proofgate"]
+    proofgate_report = json.loads(
+        (Path(result["run_dir"]) / proofgate_info["selected_candidate_report"])
+        .read_text(encoding="utf-8")
+    )
+    baseline_proofgate_report = json.loads(
+        (Path(result["run_dir"]) / proofgate_info["baseline_reference_report"])
+        .read_text(encoding="utf-8")
+    )
+    assert proofgate_report["verdict"] == "INCONCLUSIVE"
+    assert proofgate_report["subtype"] == "SELF_COMPARISON"
+    assert proofgate_report["comparison"] is None
+    assert baseline_proofgate_report["verdict"] == "INCONCLUSIVE"
+    assert baseline_proofgate_report["subtype"] == "SELF_COMPARISON"
+    assert baseline_proofgate_report["comparison"] is None
+    # During Phase C dual-write the legacy decision path is intentionally preserved;
+    # this self-comparison pass is not a Proof Gate acceptance and the separate cut-over
+    # PR must switch this path before claiming single-source gate behavior.
+    assert report["final_acceptance_gate"]["passed"] is True
+    assert report["proofgate"]["selected_candidate_verdict"] == "INCONCLUSIVE"
+    assert report["proofgate"]["shadow_parity_status"] == "intentional_inconclusive_self_comparison"
+    assert report["proofgate"]["legacy_selected_gate_passed"] is True
+    manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
+    assert manifest["proofgate"]["selected_candidate_report_sha256"] == proofgate_report["report_sha256"]
+    # A downloaded selected-model directory must carry every provenance file its
+    # manifest references, not rely on sibling files in the run root.
+    selected_dir = Path(result["manifest_path"]).parent
+    assert (selected_dir / "replay.json").is_file()
+    assert (selected_dir / "data_report.json").is_file()
+    selected_proofgate_copy = json.loads(
+        (selected_dir / proofgate_info["selected_candidate_report"]).read_text(encoding="utf-8")
+    )
+    assert selected_proofgate_copy["report_sha256"] == proofgate_report["report_sha256"]
+    data_report = json.loads((Path(result["run_dir"]) / "data_report.json").read_text(encoding="utf-8"))
+    assert proofgate_report["metadata"]["gate_split_sha256"] == data_report["splits"]["acceptance_gate"]["sha256"]
+    replay = json.loads((Path(result["run_dir"]) / "replay.json").read_text(encoding="utf-8"))
+    assert replay["extra"]["proofgate_shadow"]["selected_candidate_report_sha256"] == proofgate_report["report_sha256"]
 
 
 def test_cli_exit_code_4_when_acceptance_gate_is_underpowered(tmp_path, capsys):
@@ -102,6 +160,16 @@ def test_cli_exit_code_4_when_acceptance_gate_is_underpowered(tmp_path, capsys):
     payload = json.loads(captured.out)
     assert payload["status"] == "acceptance_gate_underpowered"
     assert payload["acceptance_gate_sufficient"] is False
+    report_path = output_dir / payload["run_id"] / "report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    proofgate_report = json.loads(
+        (report_path.parent / report["proofgate"]["selected_candidate_report"])
+        .read_text(encoding="utf-8")
+    )
+    assert proofgate_report["verdict"] == "INCONCLUSIVE"
+    assert proofgate_report["subtype"] == "UNDERPOWERED"
+    assert proofgate_report["comparison"] is None
+    assert report["selected_candidate_gate"]["passed"] is False
 
 
 def test_invalid_zero_runtime_is_rejected_before_any_candidate_or_model_loading(tmp_path, monkeypatch, capsys):
