@@ -126,14 +126,31 @@ def value_to_label(value: Any, feature: Any) -> str:
     return str(value).strip()
 
 
-def materialize_rows(dataset_split: Any, text_column: str, label_column: str) -> list[dict[str, str]]:
+def resolve_label(raw_label: Any, feature: Any, *, missing_label: str | None = None) -> str:
+    if raw_label is None or str(raw_label).strip().casefold() in {"", "none", "null", "nan", "nat", "<na>"}:
+        if missing_label is None:
+            raise ValueError("Missing label in source dataset row.")
+        return missing_label
+    return value_to_label(raw_label, feature)
+
+
+def materialize_rows(
+    dataset_split: Any,
+    text_column: str,
+    label_column: str,
+    *,
+    missing_label: str | None = None,
+) -> list[dict[str, str]]:
     label_feature = dataset_split.features.get(label_column)
     rows: list[dict[str, str]] = []
     for index, item in enumerate(dataset_split):
         text = str(item.get(text_column) or "").strip()
-        label = value_to_label(item.get(label_column), label_feature)
-        if not text or not label or label.casefold() in {"none", "null", "nan"}:
-            raise ValueError(f"Empty text/label in source split at row {index}")
+        if not text:
+            raise ValueError(f"Empty text in source split at row {index}")
+        try:
+            label = resolve_label(item.get(label_column), label_feature, missing_label=missing_label)
+        except ValueError as exc:
+            raise ValueError(f"Missing/invalid label in source split at row {index}") from exc
         rows.append({"text": text, "label": label})
     return rows
 
@@ -233,6 +250,7 @@ def run_dataset(dataset_key: str, output_dir: Path, max_runtime_seconds: int, bo
         "official_train_used_for_fit": True,
         "official_validation_used": False,
         "official_test_used_for_selection_or_gate": False,
+        "clinc150_missing_label_mapping": ("A non-empty CLINC150 utterance with a missing ClassLabel is mapped to the explicit out_of_scope intent, consistent with this published dataset variant; other benchmarks fail closed on missing labels." if dataset_key == "clinc150" else None),
         "group_column": None,
         "group_split_available": False,
         "group_split_limitation": (
@@ -259,8 +277,8 @@ def run_dataset(dataset_key: str, output_dir: Path, max_runtime_seconds: int, bo
     try:
         resolved_revision = HfApi().dataset_info(repo_id, revision="main").sha
         manifest["resolved_dataset_revision"] = resolved_revision
-        train_split = load_dataset(repo_id, split="train", revision=resolved_revision)
-        test_split = load_dataset(repo_id, split="test", revision=resolved_revision)
+        train_split = load_dataset(repo_id, split="train", revision=resolved_revision, trust_remote_code=True)
+        test_split = load_dataset(repo_id, split="test", revision=resolved_revision, trust_remote_code=True)
 
         text_column = choose_column(list(train_split.column_names), str(cfg["text_candidates"]), "text")
         label_column = choose_column(list(train_split.column_names), str(cfg["label_candidates"]), "label")
@@ -268,7 +286,8 @@ def run_dataset(dataset_key: str, output_dir: Path, max_runtime_seconds: int, bo
             raise ValueError(
                 f"Official test columns don't match train columns: {test_split.column_names}"
             )
-        raw_train = materialize_rows(train_split, text_column, label_column)
+        missing_label = "out_of_scope" if dataset_key == "clinc150" else None
+        raw_train = materialize_rows(train_split, text_column, label_column, missing_label=missing_label)
         prepared, preparation_audit = prepare_training_rows(
             raw_train, max_per_class=int(cfg["max_per_class"]), seed=SEED
         )
@@ -325,7 +344,7 @@ def run_dataset(dataset_key: str, output_dir: Path, max_runtime_seconds: int, bo
             )
             report_path = Path(result["run_dir"]) / "report.json"
             report = json.loads(report_path.read_text(encoding="utf-8"))
-            test_rows = materialize_rows(test_split, text_column, label_column)
+            test_rows = materialize_rows(test_split, text_column, label_column, missing_label=missing_label)
             test_texts = [row["text"] for row in test_rows]
             test_labels = np.asarray([row["label"] for row in test_rows])
 
