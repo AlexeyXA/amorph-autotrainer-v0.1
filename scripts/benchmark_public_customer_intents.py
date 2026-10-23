@@ -155,6 +155,38 @@ def materialize_rows(
     return rows
 
 
+def exclude_exact_test_text_overlaps(
+    raw_rows: list[dict[str, str]],
+    official_test_texts: Iterable[str],
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """Remove train rows whose normalized text occurs in official test inputs.
+
+    Only held-out input text is read; no held-out labels or metrics are accessed.
+    This leakage-hygiene pass is performed before model fitting and selection.
+    """
+    test_keys = {normalized_text(text) for text in official_test_texts if normalized_text(text)}
+    overlap_keys = {
+        normalized_text(row["text"])
+        for row in raw_rows
+        if normalized_text(row["text"]) in test_keys
+    }
+    retained = [
+        {"text": row["text"], "label": row["label"]}
+        for row in raw_rows
+        if normalized_text(row["text"]) not in test_keys
+    ]
+    audit = {
+        "official_test_input_rows_seen_without_labels": len(list(official_test_texts)) if not isinstance(official_test_texts, list) else len(official_test_texts),
+        "official_test_normalized_text_keys": len(test_keys),
+        "training_rows_removed_for_exact_normalized_test_text_overlap": len(raw_rows) - len(retained),
+        "overlapping_normalized_text_keys": len(overlap_keys),
+        "official_test_normalized_text_keys_sha256": sha256_bytes("\n".join(sorted(test_keys)).encode("utf-8")),
+        "overlap_key_set_sha256": sha256_bytes("\n".join(sorted(overlap_keys)).encode("utf-8")),
+        "test_labels_read_during_hygiene": False,
+    }
+    return retained, audit
+
+
 def prepare_training_rows(
     raw_rows: list[dict[str, str]],
     *,
