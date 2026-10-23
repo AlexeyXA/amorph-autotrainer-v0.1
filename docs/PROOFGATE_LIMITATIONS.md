@@ -26,6 +26,12 @@ Proof Gate не обучает модели, не выбирает архите�
 
 Минимум примеров каждого класса — операционный предохранитель, а не формальный анализ статистической мощности. Равенство `ci_lower == -margin` проходит формальное правило non-inferiority; это не означает, что модели идентичны.
 
+## Parity audit is not independent statistical validation
+
+The live AMORPH pipeline uses `proofgate.evaluate()` for the acceptance verdict. Both Proof Gate and the compatibility/parity check reuse the shared functions in `amorph_autotrainer.metrics` (including `classification_metrics`, `paired_stratified_bootstrap_macro_f1` and `gate_candidate`). Recomputing the legacy result confirms that the pipeline supplies the same predictions, criteria and decision mapping; it is **not** an independent implementation of the confidence interval or acceptance rule.
+
+A defect in one of those shared helpers can affect both paths in the same way and still yield `parity_status=match`. Therefore parity is useful integration/regression evidence, not an independent statistical oracle or a new scientific replication. Confidence in the shared statistical procedure also depends on focused unit tests, code review and validation on suitably fresh data.
+
 ## Статистические ограничения
 
 1. **Интервал условен на уже обученных моделях.** Bootstrap пересэмплирует gate-наблюдения, но не переобучает модели на новых train split. Он не учитывает разброс от повторного обучения, выбора гиперпараметров или нового сбора данных.

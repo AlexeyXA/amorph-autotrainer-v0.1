@@ -8,7 +8,7 @@
 | 2 | Powered acceptance gate (1+3) in executable split | **done** — hard row floors and fail-closed underpowered status |
 | 3 | Strategy ABI + conformance + fingerprints | **done** |
 | 4 | Proof Gate standalone API (Phase A+B) | **done** — `amorph_autotrainer.proofgate` |
-| 5 | Single gate decision path (Phase C) | **done** — Proof Gate decides; legacy calculation is an independent audit and can only veto acceptance on mismatch |
+| 5 | Single gate decision path (Phase C) | **done** — Proof Gate decides; legacy parity reuses shared metric/bootstrap helpers to check wiring, not as an independent statistical implementation |
 | 6 | External scikit-learn example (Phase D) | **done** — `examples/sklearn_holdout_gate.py` |
 | 7 | Proof Gate limitations and safe-use documentation | **done** — `docs/PROOFGATE_LIMITATIONS.md` |
 | 8 | Owner domain CSV run with artifact hashes | **owner action required** — not yet demonstrated on the owner domain |
@@ -28,7 +28,7 @@
 ## C2 real-challenger regression evidence
 
 - Default-policy MASSIVE run [#39922255007](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/39922255007) succeeded on the C2 merge SHA. The default candidate was not validation-eligible; Proof Gate recorded `INCONCLUSIVE / SELF_COMPARISON`, `decision_passed=false`, and no synthetic zero-width confidence interval. Artifact ID `12487328876`; ZIP SHA-256 `ddfd02ecd6c35c904271bc20d157f13dd1b851bca0c375d581915a01f2a2874a`; all 23/23 inventory entries verified.
-- Predeclared experiment [#39922255003](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/39922255003) on the same C2 commit selected the E5 C=0.1 / balanced candidate. Gate: 2,731 rows; TF-IDF Macro-F1 `0.435771`; E5 Macro-F1 `0.634771`; paired delta `+0.200598`; 95% CI `[+0.177388, +0.221808]`; 500 bootstrap replicates; Proof Gate `ACCEPT`; legacy audit `passed=true`; parity `match`. Artifact ID `12488475401`; ZIP SHA-256 `f7134298299b3adcddf192affd3d81d948a9968a45cf6803ca488fa3eb4932ee`; all 28/28 inventory entries verified.
+- Predeclared experiment [#39922255003](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/39922255003) on the same C2 commit selected the E5 C=0.1 / balanced candidate. Gate: 2,731 rows; TF-IDF Macro-F1 `0.435771`; E5 Macro-F1 `0.634771`; paired delta `+0.200598`; 95% CI `[+0.177388, +0.221808]`; 500 bootstrap replicates; Proof Gate `ACCEPT`; compatibility calculation `passed=true`; parity `match` using the same shared metric/bootstrap helpers (wiring evidence, not an independent statistical check). Artifact ID `12488475401`; ZIP SHA-256 `f7134298299b3adcddf192affd3d81d948a9968a45cf6803ca488fa3eb4932ee`; all 28/28 inventory entries verified.
 - Dataset revision: `c4aa61e89895160619e18a94de72f19b99e72ca2`. This is an integration/parity regression run on a dataset/split/gate already inspected during previous E5 work; **do not claim a new independent statistical confirmation**. The public official test remains report-only and had been inspected earlier.
 - Known benchmark warnings remain: the near-duplicate audit is skipped above 5,000 rows (worker-group split does not rule out near-duplicates across different groups), and zero-valued cost rates mean TCO is based on assumed-free inputs, not measured zero economic cost.
 

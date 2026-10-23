@@ -1,6 +1,6 @@
 # Proof Gate v0.1 API and AMORPH manifest mapping
 
-Status: Phase A+B standalone API and Phase C decision cut-over are implemented. The live pipeline uses Proof Gate verdicts for acceptance; the legacy calculation is retained only as an independent parity auditor and can only veto an ACCEPT on mismatch. Proof Gate evaluates precomputed labels and predictions; it is not a model trainer or strategy selector.
+Status: Phase A+B standalone API and Phase C decision cut-over are implemented. The live pipeline uses Proof Gate verdicts for acceptance. The legacy decision is recalculated using the shared metrics/bootstrap helpers to check decision wiring and criteria; a match is compatibility evidence, not an independent validation of the statistical kernel. A detected mismatch can veto ACCEPT. Proof Gate evaluates precomputed labels and predictions; it is not a model trainer or strategy selector.
 
 ## API
 
@@ -84,4 +84,4 @@ Do not use that four-row illustrative sample with the default five-examples-per-
 | proofgate.decision_source / cutover_complete | `proofgate.evaluate` / `true` |
 | selected artifact directory | Includes `replay.json`, `data_report.json` and referenced `proofgate/` reports |
 
-The pipeline accepts a non-baseline candidate only when Proof Gate returns ACCEPT and the independent legacy parity audit agrees. A parity mismatch suppresses acceptance and is recorded as `proofgate_legacy_parity_mismatch`; the legacy calculation cannot promote REJECT or INCONCLUSIVE. A TF-IDF self-comparison is INCONCLUSIVE, has no synthetic confidence interval, and does not claim gate acceptance. Final-test data remains outside selection and gate decisions.
+The pipeline accepts a non-baseline candidate only when Proof Gate returns ACCEPT and the legacy compatibility calculation agrees. Both routes deliberately use shared metric/bootstrap helpers, so parity checks protect wiring and criteria from divergence but cannot detect a common-mode defect in those shared helpers. A parity mismatch suppresses acceptance and is recorded as `proofgate_legacy_parity_mismatch`; the legacy calculation cannot promote REJECT or INCONCLUSIVE. A TF-IDF self-comparison is INCONCLUSIVE, has no synthetic confidence interval, and does not claim gate acceptance. Final-test data remains outside selection and gate decisions.

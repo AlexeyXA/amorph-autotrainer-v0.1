@@ -400,9 +400,10 @@ def run_training(
             gate_result["passed"] = False
             gate_result.setdefault("reasons", []).append("acceptance_gate_underpowered")
 
-    # Keep an independent legacy calculation only to audit the cut-over mapping.
-    # Reuse Proof Gate's aggregate metrics but recompute the paired bootstrap from the
-    # same gate rows/seed. Any unexpected parity mismatch fails closed below.
+    # Re-evaluate the legacy decision mapping with the shared metric/bootstrap
+    # helpers to catch wiring/configuration divergence. This is a compatibility
+    # check, not an independent implementation of the shared statistical kernel.
+    # Any detected mismatch still fails closed below.
     legacy_selected_gate_passed: bool | None = None
     if not gate_sufficient:
         proofgate_parity_status = "not_comparable_underpowered"
