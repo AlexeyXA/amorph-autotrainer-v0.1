@@ -47,7 +47,7 @@ DATASETS: dict[str, dict[str, str | int]] = {
         "repo_id": "DeepPavlov/clinc150",
         "text_candidates": "utterance,text,query",
         "label_candidates": "label,intent,category",
-        "license": "CC BY 4.0 (upstream UCI CLINC150 record)",
+        "license": "License provenance requires reconciliation: original clinc/oos-eval repository states CC BY 3.0 Unported; UCI CLINC150 record may state CC BY 4.0. Do not assume the repackaged Hub dataset has identical redistribution terms without checking.",
         "card": "https://huggingface.co/datasets/DeepPavlov/clinc150",
         "max_per_class": 39,
         "domain": "crowdsourced multi-domain intent and out-of-scope classification",
