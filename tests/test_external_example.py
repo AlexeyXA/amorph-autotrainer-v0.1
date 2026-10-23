@@ -80,7 +80,9 @@ def test_standalone_sklearn_example_accepts_explicit_group_safe_split(tmp_path):
     report = json.loads(output.read_text(encoding="utf-8"))
     assert report["metadata"]["split_method"] == "group_shuffle_holdout"
     assert report["metadata"]["group_column"] == "worker_id"
-    assert report["metadata"]["train_row_count"] + report["metadata"]["gate_row_count"] == report["sample"]["n_examples"] + report["metadata"]["train_row_count"]
+    assert report["metadata"]["train_row_count"] + report["metadata"]["gate_row_count"] == report["metadata"]["dataset_row_count"]
+    assert len(report["metadata"]["train_group_ids_sha256"]) == 64
+    assert len(report["metadata"]["gate_group_ids_sha256"]) == 64
     assert report["verdict"] in {"ACCEPT", "REJECT", "INCONCLUSIVE"}
 
 
