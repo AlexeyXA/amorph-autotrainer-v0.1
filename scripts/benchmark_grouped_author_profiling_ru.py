@@ -29,7 +29,6 @@ DATASET_FILE = "data/train.jsonl"
 DATASET_LICENSE = "Apache-2.0"
 DATASET_CARD = "https://huggingface.co/datasets/sagteam/author_profiling"
 DATASET_MIRROR_CARD = "https://huggingface.co/datasets/SPG29/author_profiling"
-DATASET_PAPER = "https://doi.org/10.1007/s10994-021-06022-0"
 TASK_COLUMN = "age_imitation"
 TEXT_COLUMN = "text"
 GROUP_COLUMN = "author_id"
@@ -254,7 +253,6 @@ def main() -> int:
         "dataset_license": DATASET_LICENSE,
         "dataset_card": DATASET_CARD,
         "dataset_mirror_card": DATASET_MIRROR_CARD,
-        "dataset_paper": DATASET_PAPER,
         "official_split_downloaded": "train",
         "official_validation_downloaded": False,
         "official_test_downloaded": False,
