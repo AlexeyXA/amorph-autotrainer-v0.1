@@ -40,6 +40,11 @@ def sha256_indices(indices: Sequence[int]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def sha256_strings(values: Sequence[str]) -> str:
+    canonical = json.dumps(sorted(str(value) for value in values), ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def load_csv(
     path: Path,
     *,
@@ -255,12 +260,19 @@ def main(argv: list[str] | None = None) -> int:
         train_rows_sha256 = sha256_indices(train_indices)
         metadata = {
             "dataset_sha256": dataset_sha256,
+            "dataset_row_count": int(len(texts)),
             "train_row_count": int(len(train_indices)),
             "gate_row_count": int(len(gate_indices)),
             "train_row_indices_sha256": train_rows_sha256,
             "gate_row_indices_sha256": gate_rows_sha256,
             "split_method": split_method,
             "group_column": args.group_column,
+            "train_group_ids_sha256": (
+                sha256_strings([groups[int(i)] for i in train_indices]) if groups is not None else None
+            ),
+            "gate_group_ids_sha256": (
+                sha256_strings([groups[int(i)] for i in gate_indices]) if groups is not None else None
+            ),
             "seed": args.seed,
             "baseline_model": "word_tfidf_1_2 + LogisticRegression(C=1.0, class_weight=None)",
             "candidate_model": "word_char_tfidf + LogisticRegression(C=1.0, class_weight=balanced)",
