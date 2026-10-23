@@ -322,8 +322,10 @@ def run_dataset(dataset_key: str, output_dir: Path, max_runtime_seconds: int, bo
         missing_label = "out_of_scope" if dataset_key == "clinc150" else None
         raw_train = materialize_rows(train_split, text_column, label_column, missing_label=missing_label)
         # Leakage hygiene only: compare input text, without touching official test labels.
+        # Index only the text column here. Do not request/iterate the test label column
+        # until the selector and Proof Gate have finished.
         official_test_texts_for_hygiene = [
-            str(item.get(text_column) or "").strip() for item in test_split
+            str(value or "").strip() for value in test_split[text_column]
         ]
         if any(not text for text in official_test_texts_for_hygiene):
             raise ValueError("Official test contains empty text; refusing an unverifiable overlap audit.")
