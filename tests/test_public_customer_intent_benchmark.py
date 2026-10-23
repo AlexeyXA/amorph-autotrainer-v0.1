@@ -4,6 +4,7 @@ from scripts.benchmark_public_customer_intents import (
     MAX_AUDIT_ROWS,
     canonical_rows_sha256,
     prepare_training_rows,
+    resolve_label,
 )
 
 
@@ -52,3 +53,15 @@ def test_training_cap_never_exceeds_near_duplicate_audit_limit():
     assert len(prepared) == 225
     assert len(prepared) <= MAX_AUDIT_ROWS
     assert {row["label"] for row in prepared} == {"alpha", "beta", "gamma"}
+
+def test_clinc_missing_classlabel_is_explicitly_mapped_to_out_of_scope():
+    assert resolve_label(None, None, missing_label="out_of_scope") == "out_of_scope"
+
+
+def test_missing_labels_fail_closed_without_a_predeclared_oos_mapping():
+    try:
+        resolve_label(None, None)
+    except ValueError as exc:
+        assert "Missing label" in str(exc)
+    else:
+        raise AssertionError("Missing labels must fail closed without an explicit mapping")
