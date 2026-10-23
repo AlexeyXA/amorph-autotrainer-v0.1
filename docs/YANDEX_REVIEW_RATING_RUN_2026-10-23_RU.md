@@ -59,9 +59,17 @@ Gate содержит 46 negative, 22 neutral и 1 157 positive примеров
 
 ## Контрольная сумма evidence archive
 
-Первый ZIP artifact ID **12501139893**; GitHub digest и SHA-256 скачанного ZIP совпадают: **be52b8fe63a4b38e63225a57e8f0ff30d6f3187e006fe0c35f3f89930be6e43e**.
+Первый архив run **39954468691** / artifact ID **12501139893** был неполным: из 17 файлов, перечисленных во внутреннем inventory, в ZIP находились 11. Это было отмечено в предыдущей версии отчёта.
 
-Внутренний execution manifest содержал 17 JSON inventory entries; все 11 файлов из inventory, присутствовавшие в загруженном ZIP, совпали с SHA-256. Шесть безопасных metadata JSON были записаны в workspace manifest, но не попали в upload paths. Workflow обновлён в этом PR, чтобы включить оставшиеся metadata/replay JSON в новый artifact без загрузки raw text или model files. После завершения нового запуска нужно повторно проверить полную сверку всех включённых файлов.
+**Повторный запуск завершён:** [GitHub Actions run 39955483712](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/39955483712), source commit **bb7671a9017ced0af5315df667c5078c26f42e77**, internal run ID **20261023T124503Z-f0447458**, artifact ID **12502471862**.
+
+- GitHub artifact digest: `sha256:c528897cfd4178d4c4260f0f8cd57da0eaacfbdc24b6250e070e88371ddc2ada`.
+- SHA-256 скачанного ZIP: `c528897cfd4178d4c4260f0f8cd57da0eaacfbdc24b6250e070e88371ddc2ada` — совпадает с digest GitHub.
+- ZIP содержит 18 файлов: 17 файлов evidence inventory плюс `execution_manifest.json`.
+- Проверка каждого из **17/17** перечисленных файлов подтвердила и SHA-256, и размер в байтах; отсутствующих или несовпавших файлов нет.
+- Архив не содержит исходный CSV отзывов, raw text или модельные веса.
+
+Повторный run не изменил математический вывод. E5 имеет Macro-F1 0.6558 на validation против 0.5196 у TF-IDF, но gate даёт E5 Macro-F1 0.5474 против 0.5523 у TF-IDF; paired-bootstrap mean delta -0.0030, 95% CI [-0.0548, +0.0491], Proof Gate **REJECT**. Выбран TF-IDF; `baseline_kept_candidate_rejected`. Final-test цифры в артефакте остаются ретроспективно раскрытыми и не должны использоваться для настройки на той же выборке.
 
 ## Ссылки
 
