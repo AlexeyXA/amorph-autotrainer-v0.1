@@ -247,7 +247,7 @@ def prepare_training_rows(
         raise ValueError(f"Sampling left insufficient class support: {dict(sampled_counts)}")
 
     audit = {
-        "official_train_rows": len(raw_rows),
+        "input_rows_after_official_test_text_hygiene": len(raw_rows),
         "unique_normalized_texts_before_conflict_removal": len(by_key_labels),
         "conflicting_normalized_text_keys_removed": len(conflict_keys),
         "training_rows_removed_for_conflicting_labels": conflicting_rows_removed,
@@ -344,7 +344,7 @@ def run_dataset(dataset_key: str, output_dir: Path, max_runtime_seconds: int, bo
             "official_test_overlap_hygiene": overlap_audit,
             "official_test_label_access_policy": "Official test input texts are used only to remove exact normalized-text overlaps from training before fitting; official test labels are not loaded until after selector and Proof Gate finish. Official test metrics are report-only.",
             "training_preparation_audit": preparation_audit,
-            "sampled_training_csv_sha256": canonical_rows_sha256(prepared),
+            "sampled_training_rows_canonical_sha256": canonical_rows_sha256(prepared),
             "sampled_training_rows": len(prepared),
             "sampled_training_classes": len({row["label"] for row in prepared}),
             "status": "prepared",
@@ -470,7 +470,7 @@ def run_dataset(dataset_key: str, output_dir: Path, max_runtime_seconds: int, bo
             "training_cap_per_class": cfg["max_per_class"],
             "source_revision": resolved_revision,
             "official_train_canonical_sha256": manifest.get("official_train_canonical_sha256"),
-            "sampled_training_csv_sha256": manifest.get("sampled_training_csv_sha256"),
+            "sampled_training_rows_canonical_sha256": manifest.get("sampled_training_rows_canonical_sha256"),
             "official_test_canonical_sha256": manifest.get("official_test_canonical_sha256"),
         })
         run_exit_code = 0
