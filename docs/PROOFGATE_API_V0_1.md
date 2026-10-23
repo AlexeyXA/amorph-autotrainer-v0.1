@@ -32,6 +32,8 @@ The first release supports Macro-F1 only because the paired confidence interval 
 
 Underpowered gates and self-comparisons do not get synthetic zero-width confidence intervals. For conformance defects, the evaluator returns a report with errors instead of raising, preserving evidence that the gate did not run.
 
+The observed labels in `y_gate` define the class vocabulary for v0.1. If baseline or candidate predictions contain a label not present in `y_gate`, the verdict is `INCONCLUSIVE` (`CONFORMANCE_FAILED`). The API cannot infer from predictions alone whether that label is out-of-taxonomy or a class missing from the supplied gate. This fail-closed rule also keeps point metrics and the paired bootstrap from silently using different class sets.
+
 The bootstrap interval is conditional on the fitted models' supplied predictions; it does not estimate variation caused by retraining.
 
 ## Replay and report format
