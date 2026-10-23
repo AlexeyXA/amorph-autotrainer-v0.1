@@ -8,6 +8,8 @@ on:
 
 permissions:
   contents: read
+  actions: read
+  issues: write
 
 concurrency:
   group: public-runnlu-intent-${{ github.ref }}
@@ -56,3 +58,43 @@ jobs:
           path: ${{ runner.temp }}/public-runnlu-evidence/
           if-no-files-found: warn
           retention-days: 30
+
+      - name: Publish run and artifact locator to the shared Issue #1
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const runId = context.runId;
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${runId}`;
+            let runStatus = "unknown";
+            let artifact = null;
+            try {
+              const runResponse = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: runId });
+              runStatus = runResponse.data.conclusion || runResponse.data.status;
+            } catch (error) {
+              core.warning(`Could not read workflow-run status: ${error.message}`);
+            }
+            try {
+              const artifactResponse = await github.rest.actions.listWorkflowRunArtifacts({ owner, repo, run_id: runId });
+              artifact = artifactResponse.data.artifacts.find(item => item.name === `amorph-public-runnlu-${runId}`) || null;
+            } catch (error) {
+              core.warning(`Could not read uploaded artifacts: ${error.message}`);
+            }
+            const lines = [
+              "[GPT] Public RuNLU Actions run locator",
+              `- Commit: ${context.sha}`,
+              `- Run: ${runUrl}`,
+              `- Status at locator step: ${runStatus}`,
+              `- Artifact name: amorph-public-runnlu-${runId}`,
+              artifact ? `- Artifact ID: ${artifact.id}` : "- Artifact ID: not visible to API at locator step",
+              artifact?.digest ? `- GitHub artifact digest: ${artifact.digest}` : "",
+              "- Dataset source is pinned; only official train split is downloaded. No raw dataset CSV is included in the artifact.",
+              "- This is public-dataset integration evidence, not owner-private-domain acceptance."
+            ].filter(Boolean);
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: 1,
+              body: lines.join("\n")
+            });
