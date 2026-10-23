@@ -62,7 +62,7 @@ jobs:
         run: python -m pytest -q tests/test_llm_sft_oasst1_data.py tests/test_llm_sft_oasst1_gate.py
       - name: Train pinned Qwen LoRA adapter on tree-disjoint Russian OASST1
         run: |
-          python experiments/llm_sft_oasst1/train.py --output-dir llm_sft_poc_output --max-train-examples 128 --max-validation-examples 24 --max-gate-examples 32 --max-test-examples 32 --max-steps 16 --max-length 256 --bootstrap-samples 500
+          python -m experiments.llm_sft_oasst1.train --output-dir llm_sft_poc_output --max-train-examples 128 --max-validation-examples 24 --max-gate-examples 32 --max-test-examples 32 --max-steps 16 --max-length 256 --bootstrap-samples 500
       - name: Verify training outcome and every artifact checksum
         if: success()
         run: |
