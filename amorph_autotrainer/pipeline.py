@@ -405,18 +405,28 @@ def run_training(
         final_gate = baseline_gate
     final_candidate = candidates[final_name]
 
+    final_gate_macro_f1 = final_gate.get("candidate_macro_f1")
     absolute_target_passed = (
-        None if config.min_macro_f1 is None or not gate_sufficient
-        else final_gate["candidate_macro_f1"] >= config.min_macro_f1
+        None
+        if (
+            config.min_macro_f1 is None
+            or not gate_sufficient
+            or not isinstance(final_gate_macro_f1, (int, float, np.integer, np.floating))
+        )
+        else float(final_gate_macro_f1) >= config.min_macro_f1
     )
     if not gate_sufficient:
         final_status = "acceptance_gate_underpowered"
+    elif (
+        selected_proofgate.verdict == Verdict.INCONCLUSIVE
+        and selected_proofgate.subtype == "CONFORMANCE_FAILED"
+    ) or (
+        baseline_proofgate.verdict == Verdict.INCONCLUSIVE
+        and baseline_proofgate.subtype == "CONFORMANCE_FAILED"
+    ):
+        final_status = "acceptance_gate_conformance_failed"
     elif selected_name != "tfidf" and selected_proofgate.verdict == Verdict.INCONCLUSIVE:
-        final_status = (
-            "acceptance_gate_conformance_failed"
-            if selected_proofgate.subtype == "CONFORMANCE_FAILED"
-            else "acceptance_gate_inconclusive"
-        )
+        final_status = "acceptance_gate_inconclusive"
     elif absolute_target_passed is False:
         final_status = "target_not_met"
     elif selected_name != final_name:
