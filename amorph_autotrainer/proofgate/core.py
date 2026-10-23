@@ -344,6 +344,28 @@ def evaluate(
     if raw_candidate is not None and raw_candidate.ndim == 1 and _has_missing_or_nonfinite_labels(raw_candidate):
         shape_errors.append("pred_candidate_contains_missing_or_nonfinite_label")
 
+    # The gate labels define the observed class taxonomy for this v0.1 API.
+    # If a prediction contains an unseen label, we cannot distinguish a genuinely
+    # unknown output from a class omitted from the supplied gate. Do not let the
+    # point metrics (which include predicted-only labels) and paired bootstrap
+    # (which uses y_gate labels) silently evaluate different label universes.
+    if not shape_errors and raw_y.ndim == 1 and raw_baseline.ndim == 1 and (
+        raw_candidate is None or raw_candidate.ndim == 1
+    ):
+        try:
+            observed_labels = set(raw_y.tolist())
+            prediction_sets = [("pred_baseline", set(raw_baseline.tolist()))]
+            if raw_candidate is not None:
+                prediction_sets.append(("pred_candidate", set(raw_candidate.tolist())))
+        except TypeError:
+            shape_errors.append("labels_must_be_hashable_scalars")
+        else:
+            for prediction_name, prediction_labels in prediction_sets:
+                if prediction_labels - observed_labels:
+                    shape_errors.append(
+                        f"{prediction_name}_contains_label_absent_from_y_gate"
+                    )
+
     if shape_errors:
         return report(
             Verdict.INCONCLUSIVE,
