@@ -3,6 +3,7 @@ import subprocess
 import sys
 
 import numpy as np
+import pytest
 
 from amorph_autotrainer.proofgate import Verdict, evaluate, write_report
 
@@ -164,3 +165,33 @@ def test_json_cli_writes_report_for_inconclusive_self_comparison(tmp_path):
     assert stdout["subtype"] == "SELF_COMPARISON"
     assert payload["metadata"] == {"run": "golden-cli"}
     assert len(payload["report_sha256"]) == 64
+
+
+
+@pytest.mark.parametrize(
+    ("criteria", "message"),
+    [
+        ({"margin": "0.02"}, "margin must be a finite real number"),
+        ({"confidence": "0.95"}, "confidence must be a finite real number"),
+        ({"min_macro_f1": "0.5"}, "min_macro_f1 must be a finite real number"),
+        ({"margin": True}, "margin must be a finite real number"),
+    ],
+)
+def test_numeric_criteria_reject_strings_and_booleans(criteria, message):
+    y = _balanced_labels()
+    with pytest.raises(ValueError, match=message):
+        evaluate(y, y.copy(), np.asarray(["a"] * 79 + ["b"] + ["b"] * 80), **criteria)
+
+
+def test_ragged_array_input_returns_inconclusive_conformance_report():
+    y = [["a"], ["b", "c"]]
+    baseline = [["a"], ["b", "c"]]
+    candidate = [["a"], ["b", "c"]]
+
+    report = evaluate(y, baseline, candidate, n_bootstrap=100)
+
+    assert report.verdict == Verdict.INCONCLUSIVE
+    assert report.subtype == "CONFORMANCE_FAILED"
+    assert any(code.endswith("_array_conversion_failed") for code in report.reason_codes)
+    assert report.comparison is None
+    assert report.to_dict()["report_sha256"]
