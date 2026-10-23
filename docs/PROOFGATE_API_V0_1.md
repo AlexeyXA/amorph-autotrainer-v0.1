@@ -1,6 +1,6 @@
 # Proof Gate v0.1 API and AMORPH manifest mapping
 
-Status: in-repository Phase A+B implementation. This is a gate over already-computed labels and predictions, not a model trainer or strategy selector.
+Status: in-repository Phase A+B implementation integrated into the live AMORPH pipeline in Phase C. This is a gate over already-computed labels and predictions, not a model trainer or strategy selector.
 
 ## API
 
@@ -72,7 +72,7 @@ Input JSON shape:
 
 Do not use that four-row illustrative sample with the default five-examples-per-class floor as evidence of a powered result; the example only shows the JSON schema.
 
-## AMORPH manifest field map (Phase C integration target)
+## AMORPH manifest and replay mapping (Phase C integration)
 
 | AMORPH field | Proof Gate v0.1 field |
 |---|---|
@@ -85,4 +85,4 @@ Do not use that four-row illustrative sample with the default five-examples-per-
 | replay.json input identity | input_fingerprints.payload_sha256 |
 | report.json and manifests | report_sha256 |
 
-In particular, a legacy AMORPH self-comparison can currently have a zero-delta interval; Proof Gate intentionally treats identical prediction arrays or a missing candidate as INCONCLUSIVE instead. Full pipeline migration is a separate Phase C task so this PR does not create parallel decision logic inside the training pipeline.
+In the live pipeline, identical baseline/candidate predictions and missing challengers are represented as INCONCLUSIVE; no synthetic zero-width confidence interval is created. The pipeline accepts a challenger only when the Proof Gate verdict is ACCEPT. Legacy fields remain as adapters for existing report/SQLite consumers, and are derived from the Proof Gate report rather than calculating a second independent decision.
