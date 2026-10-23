@@ -1,42 +1,55 @@
 # Readiness checklist (honest)
 
-**Not** a claim of universal production quality. “Ready” means the *protocol* is usable and documented.
+**Not a claim of universal production quality.** For v0.1, readiness means the implemented protocol is testable, documented, and has reproducible public-benchmark evidence. Production suitability still depends on the owner data run.
 
 | # | Criterion | Status (2026-10-23) |
 |---|-----------|---------------------|
-| 1 | Green CI on `main` | expected after each merge |
-| 2 | Powered acceptance gate (1+3) in executable split | **done** |
+| 1 | Green CI on `main` | **done** — run [#39923106458](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/39923106458) on `446745e57c05fa3f76c3c513ee10f970cd6d8275` succeeded (pytest, compileall, CLI smoke) |
+| 2 | Powered acceptance gate (1+3) in executable split | **done** — hard row floors and fail-closed underpowered status |
 | 3 | Strategy ABI + conformance + fingerprints | **done** |
-| 4 | Proof Gate standalone API (Phase A+B) | **done** (`amorph_autotrainer.proofgate`) |
-| 5 | Single gate decision path (Phase C) | **dual-write in this PR**; cut-over still open |
-| 6 | External sklearn example (Phase D) | **open** |
-| 7 | LIMITATIONS doc for Proof Gate | **open** |
-| 8 | Owner domain CSV run with artifact hashes | **owner** |
-| 9 | Multi-seed protocol for promoting experimental E5/hybrid | **open** (not required for v0.1 freeze) |
+| 4 | Proof Gate standalone API (Phase A+B) | **done** — `amorph_autotrainer.proofgate` |
+| 5 | Single gate decision path (Phase C) | **done** — Proof Gate decides; legacy calculation is an independent audit and can only veto acceptance on mismatch |
+| 6 | External scikit-learn example (Phase D) | **done** — `examples/sklearn_holdout_gate.py` |
+| 7 | Proof Gate limitations and safe-use documentation | **done** — `docs/PROOFGATE_LIMITATIONS.md` |
+| 8 | Owner domain CSV run with artifact hashes | **owner action required** — not yet demonstrated on the owner domain |
+| 9 | Multi-seed protocol for promoting experimental E5/hybrid | **open** — not required for the v0.1 protocol freeze; required before stronger generalization claims |
+
+## Merged milestones
+
+| Stage | Content | Owner | Status / evidence |
+|-------|---------|-------|-------------------|
+| A+B | Standalone Proof Gate API, three verdicts, deterministic report hashes and golden tests | GPT | **merged** — PR #10, included by subsequent commits |
+| C1 | Shadow/dual-write and provenance without changing legacy decisions | GPT | **merged** — [PR #13](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/pull/13), merge SHA `9e5552a5e599b63e893dbd4120cceb963665ca45` |
+| C2 | Proof Gate is the single decision source; inconclusive cases cannot be promoted to accepted | GPT | **merged** — [PR #14](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/pull/14), merge SHA `b80d6e22575c3939caaa23dd63b690fc6787edad` |
+| D | Standalone scikit-learn example and limitations doc | GPT | **merged** — [PR #15](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/pull/15), merge SHA `446745e57c05fa3f76c3c513ee10f970cd6d8275` |
+| Real-data integration check | Predeclared MASSIVE experiment on the C2 commit exercises ACCEPT plus legacy parity | GPT | **done as integration evidence**, details below; not an independent scientific replication |
+| Owner domain | Run one real CSV with an appropriate group ID and retain run/report/split hashes | Owner | **required for readiness on the intended use case** |
+
+## C2 real-challenger regression evidence
+
+- Default-policy MASSIVE run [#39922255007](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/39922255007) succeeded on the C2 merge SHA. The default candidate was not validation-eligible; Proof Gate recorded `INCONCLUSIVE / SELF_COMPARISON`, `decision_passed=false`, and no synthetic zero-width confidence interval. Artifact ID `12487328876`; ZIP SHA-256 `ddfd02ecd6c35c904271bc20d157f13dd1b851bca0c375d581915a01f2a2874a`; all 23/23 inventory entries verified.
+- Predeclared experiment [#39922255003](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/39922255003) on the same C2 commit selected the E5 C=0.1 / balanced candidate. Gate: 2,731 rows; TF-IDF Macro-F1 `0.435771`; E5 Macro-F1 `0.634771`; paired delta `+0.200598`; 95% CI `[+0.177388, +0.221808]`; 500 bootstrap replicates; Proof Gate `ACCEPT`; legacy audit `passed=true`; parity `match`. Artifact ID `12488475401`; ZIP SHA-256 `f7134298299b3adcddf192affd3d81d948a9968a45cf6803ca488fa3eb4932ee`; all 28/28 inventory entries verified.
+- Dataset revision: `c4aa61e89895160619e18a94de72f19b99e72ca2`. This is an integration/parity regression run on a dataset/split/gate already inspected during previous E5 work; **do not claim a new independent statistical confirmation**. The public official test remains report-only and had been inspected earlier.
+- Known benchmark warnings remain: the near-duplicate audit is skipped above 5,000 rows (worker-group split does not rule out near-duplicates across different groups), and zero-valued cost rates mean TCO is based on assumed-free inputs, not measured zero economic cost.
+
+## Requirements before calling the owner's use case ready
+
+1. Run either `amorph-autotrainer train` on the owner CSV with the correct text, label and group-ID columns, or use `examples/sklearn_holdout_gate.py` for the standalone example.
+2. Keep a stable and appropriate unit of independence in `group_id` when rows from the same user/source may correlate. A group split does not replace a chronological split when the task is forecasting future data.
+3. Inspect the actual Proof Gate verdict. `INCONCLUSIVE` is not an acceptance; `REJECT` means the predeclared criterion failed; `ACCEPT` only passes the specified gate conditions for that fitted model and sample.
+4. Preserve the report, manifest, replay descriptor, dataset hash, split hashes and run SHA outside Git if the CSV contains sensitive or confidential data. Do not commit raw private data or credentials.
 
 ## Known non-goals for v0.1 freeze
 
-- BGE/GTE productization
-- Merging experiment-only PR #4 into defaults
-- Monetary TCO-optimal selection
-- LLM prompt classifiers
+- BGE/GTE productization or widening the strategy zoo.
+- Merging experiment-only draft PR #4 into defaults.
+- Claiming monetary TCO-optimal selection; current candidate selection uses a runtime proxy.
+- Treating one holdout/bootstrap result as proof of generalization or future-distribution robustness.
+- Claiming universal production readiness before the owner domain CSV run.
 
-## Unified working plan (Grok + GPT)
+## Phase C rules (post cut-over)
 
-| Stage | Content | Owner | Status |
-|-------|---------|-------|--------|
-| C1 shadow/dual-write | `proofgate.evaluate` in pipeline, legacy decides, match/mismatch audit | GPT | **this PR** |
-| Roles + readiness docs | `AGENTS.md`, this file | Grok | **this PR** |
-| C2 cut-over | decisions from Proof Gate where parity holds; self-comparison stays non-ACCEPT | GPT | next PR |
-| D | sklearn example + LIMITATIONS | GPT | after C2 |
-| Owner domain | one real CSV + group_id | Owner | parallel when ready |
-| Later | TCO mode, near-dup policy, multi-seed | shared backlog | after D |
-
-**Do not** in this PR: E5 default change, PR #4 merge, BGE/GTE, decision cut-over.
-
-## Phase C rules (must hold)
-
-1. Dual-write does **not** change selection/rollback.
-2. Self-comparison: Proof Gate `INCONCLUSIVE`; legacy may still “pass” — parity status `intentional_inconclusive_self_comparison`, not a bug.
-3. Cut-over only after documented ACCEPT/REJECT parity on real challenger cases.
-4. Official test remains report-only.
+1. Only a real challenger with Proof Gate `ACCEPT` and legacy parity `match` can pass. A parity mismatch fails closed.
+2. A baseline self-comparison is `INCONCLUSIVE`; it does not pass the gate and has no artificial zero-width CI.
+3. Underpowered and conformance-failed cases never become `ACCEPT` through fallback.
+4. The final test remains report-only and never changes selection or rollback.
