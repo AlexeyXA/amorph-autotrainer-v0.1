@@ -7,7 +7,7 @@ on:
   pull_request:
     branches:
       - main
-    types: [opened, reopened]
+    types: [opened, reopened, synchronize]
   workflow_dispatch:
 
 permissions:
@@ -30,30 +30,25 @@ jobs:
     steps:
       - name: Checkout pinned project revision
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: pyproject.toml
-
       - name: Install AMORPH, test and public-data dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[embeddings,test]"
           python -m pip install pandas pyarrow huggingface_hub
-
       - name: Verify public dataset preparation guards
         run: python -m pytest tests/test_public_runnlu_benchmark.py
-
       - name: Download pinned RuNLU train split and run AMORPH
         run: |
           python scripts/benchmark_public_runnlu_intent_ru.py \
             --output-dir "$RUNNER_TEMP/public-runnlu-evidence" \
             --max-runtime-seconds 4800 \
             --bootstrap-samples 500
-
       - name: Upload report, manifest, model bundle and SHA-256 inventory
         if: always()
         uses: actions/upload-artifact@v4
@@ -62,7 +57,6 @@ jobs:
           path: ${{ runner.temp }}/public-runnlu-evidence/
           if-no-files-found: warn
           retention-days: 30
-
       - name: Publish run and artifact locator to the shared Issue #1
         if: always()
         uses: actions/github-script@v7
@@ -100,5 +94,5 @@ jobs:
               owner,
               repo,
               issue_number: 1,
-              body: lines.join("\n")
+              body: lines.join("\\n")
             });
