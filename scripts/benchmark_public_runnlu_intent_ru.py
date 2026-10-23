@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """Run AMORPH on the public, pinned Russian RuNLU intent train split.
 
-The benchmark reads only the official train parquet. It never downloads or uses
-the official test split. Raw public input data is placed in a temporary directory
-and is not included in the uploaded evidence artifact.
+Only the official train parquet is downloaded. The official test split is never
+downloaded or used. Raw public input data is held in a temporary directory and
+is not included in the uploaded evidence artifact.
 
-Install the repository's embedding extra plus pandas, pyarrow and huggingface_hub
-before running this script. E5 uses the existing default model/configuration.
+The source has a long-tail class distribution and no speaker/session/source ID.
+Before the run, labels with fewer than 20 distinct normalized train utterances
+are excluded solely on predeclared class-support grounds: a 25% acceptance gate
+needs five examples per class to meet the configured per-class floor. Excluded
+classes and row/text hashes are recorded; they are not relabeled or silently
+treated as evaluated.
+
+Requires this repository's `.[embeddings,test]` extra plus pandas, pyarrow and
+huggingface_hub. E5 uses the pinned model revision declared below.
 """
 from __future__ import annotations
 
@@ -31,6 +38,7 @@ DATASET_README = "https://huggingface.co/datasets/mteb/RuNLUIntentClassification
 DATASET_PAPER = "https://arxiv.org/abs/1903.05566"
 E5_MODEL_ID = "intfloat/multilingual-e5-small"
 E5_MODEL_REVISION = "614241f622f53c4eeff9890bdc4f31cfecc418b3"
+MIN_UNIQUE_TEXTS_PER_LABEL = 20
 
 
 def sha256_file(path: Path) -> str:
@@ -50,7 +58,7 @@ def normalize_text(value: str) -> str:
 
 
 def prepare_records(rows: Iterable[dict[str, Any]]) -> tuple[list[dict[str, str]], dict[str, Any]]:
-    """Drop empty rows and *all* rows for conflicting normalized text labels.
+    """Remove empty rows and *all* rows for conflicting normalized-text labels.
 
     Exact duplicate rows with the same label are left for AMORPH's own audited
     duplicate handling. Conflicting labels are never arbitrarily resolved.
@@ -59,8 +67,15 @@ def prepare_records(rows: Iterable[dict[str, Any]]) -> tuple[list[dict[str, str]
     dropped_empty = 0
     normalized_labels: dict[str, set[str]] = defaultdict(set)
     for row in rows:
-        text = str(row.get("text") or "").strip()
-        label = str(row.get("label") or "").strip()
+        raw_text = row.get("text")
+        raw_label = row.get("label")
+        # Hugging Face parquet columns may encode missing values as NaN/NA.
+        text = "" if raw_text is None else str(raw_text).strip()
+        label = "" if raw_label is None else str(raw_label).strip()
+        if text.casefold() in {"nan", "nat", "<na>"}:
+            text = ""
+        if label.casefold() in {"nan", "nat", "<na>"}:
+            label = ""
         if not text or not label:
             dropped_empty += 1
             continue
@@ -87,7 +102,7 @@ def prepare_records(rows: Iterable[dict[str, Any]]) -> tuple[list[dict[str, str]
         "rows_with_empty_text_or_label_removed": dropped_empty,
         "ambiguous_normalized_text_keys_removed": len(conflicting_keys),
         "rows_removed_for_conflicting_labels": len(removed_conflicts),
-        "rows_retained_before_AMORPH_deduplication": len(kept),
+        "rows_retained_before_class_support_filter_and_AMORPH_deduplication": len(kept),
         "distinct_labels_before_conflict_removal": len(normalized_labels),
         "distinct_labels_after_conflict_removal": len(counts),
         "class_counts_after_conflict_removal": dict(sorted(counts.items())),
@@ -96,6 +111,51 @@ def prepare_records(rows: Iterable[dict[str, Any]]) -> tuple[list[dict[str, str]
         "policy": "drop all normalized-text rows with conflicting labels; never relabel",
     }
     return kept, audit
+
+
+def filter_low_support_classes(
+    records: list[dict[str, str]],
+    minimum_unique_texts_per_label: int = MIN_UNIQUE_TEXTS_PER_LABEL,
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """Filter labels by distinct normalized-text support, never by model metrics."""
+    unique_texts_by_label: dict[str, set[str]] = defaultdict(set)
+    for row in records:
+        unique_texts_by_label[row["label"]].add(normalize_text(row["text"]))
+    unique_counts = {
+        label: len(texts) for label, texts in sorted(unique_texts_by_label.items())
+    }
+    excluded_labels = {
+        label: count
+        for label, count in unique_counts.items()
+        if count < minimum_unique_texts_per_label
+    }
+    excluded_set = set(excluded_labels)
+    retained = [row for row in records if row["label"] not in excluded_set]
+    excluded_rows = [row for row in records if row["label"] in excluded_set]
+    excluded_canonical = "\n".join(sorted(
+        f"{normalize_text(row['text'])}\t{row['label']}" for row in excluded_rows
+    ))
+    retained_unique_counts = {
+        label: count
+        for label, count in unique_counts.items()
+        if label not in excluded_set
+    }
+    audit = {
+        "minimum_unique_texts_per_label": minimum_unique_texts_per_label,
+        "rationale": (
+            "The target acceptance-gate fraction is 25%; 20 unique rows/class supports "
+            "the configured floor of five gate examples/class in the target split design."
+        ),
+        "filter_basis": "unique normalized text support only; no validation/gate/test metrics",
+        "excluded_labels_and_unique_text_counts": dict(sorted(excluded_labels.items())),
+        "excluded_label_count": len(excluded_labels),
+        "rows_excluded_for_low_class_support": len(excluded_rows),
+        "rows_retained_for_training_input": len(retained),
+        "rows_retained_unique_texts_by_label": retained_unique_counts,
+        "excluded_rows_sha256": sha256_text(excluded_canonical),
+        "retained_labels": sorted(retained_unique_counts),
+    }
+    return retained, audit
 
 
 def write_csv(path: Path, rows: list[dict[str, str]]) -> None:
@@ -176,13 +236,10 @@ def main() -> int:
     }
     write_json(output_dir / "public_dataset_manifest.json", source_manifest)
 
-    run_exit_code = 1
-    run_result: subprocess.CompletedProcess[str] | None = None
-    with tempfile.TemporaryDirectory(prefix="amorph_public_runnlu_") as scratch:
-        scratch_dir = Path(scratch)
-        parquet_path: Path | None = None
-        input_csv = scratch_dir / "runnlu_train_clean.csv"
-        try:
+    run_exit_code: int | None = None
+    try:
+        with tempfile.TemporaryDirectory(prefix="amorph_public_runnlu_") as scratch:
+            scratch_dir = Path(scratch)
             try:
                 from huggingface_hub import hf_hub_download
                 import pandas as pd
@@ -203,27 +260,36 @@ def main() -> int:
             if missing:
                 raise RuntimeError(f"Pinned public dataset file is missing required columns: {missing}")
 
-            clean_records, audit = prepare_records(frame[["text", "label"]].to_dict("records"))
+            clean_records, prep_audit = prepare_records(
+                frame[["text", "label"]].fillna("").to_dict("records")
+            )
+            supported_records, support_audit = filter_low_support_classes(clean_records)
             source_manifest["source_parquet_sha256"] = sha256_file(parquet_path)
             source_manifest["source_parquet_bytes"] = parquet_path.stat().st_size
-            source_manifest["dataset_prep_audit"] = audit
-            if not clean_records:
-                raise RuntimeError("No valid records remain after data validation.")
-            insufficient = {
-                label: count
-                for label, count in audit["class_counts_after_conflict_removal"].items()
-                if count < 5
+            source_manifest["dataset_prep_audit"] = prep_audit
+            source_manifest["class_support_filter"] = support_audit
+            if not supported_records:
+                raise RuntimeError("No records remain after the predeclared class-support filter.")
+
+            post_filter_unique_counts = {
+                label: len({normalize_text(row["text"]) for row in supported_records if row["label"] == label})
+                for label in sorted({row["label"] for row in supported_records})
             }
-            source_manifest["classes_below_minimum_5"] = insufficient
-            if insufficient:
+            below_floor = {
+                label: count for label, count in post_filter_unique_counts.items()
+                if count < MIN_UNIQUE_TEXTS_PER_LABEL
+            }
+            if below_floor:
                 raise RuntimeError(
-                    "At least one intent has fewer than five unambiguous examples; "
-                    "refusing to silently drop classes or weaken the split constraints."
+                    "Class-support filter invariant failed: at least one retained class is below "
+                    f"{MIN_UNIQUE_TEXTS_PER_LABEL} unique texts: {below_floor}"
                 )
 
-            write_csv(input_csv, clean_records)
+            input_csv = scratch_dir / "runnlu_train_clean.csv"
+            write_csv(input_csv, supported_records)
             source_manifest["cleaned_training_csv_sha256"] = sha256_file(input_csv)
-            source_manifest["cleaned_training_rows"] = len(clean_records)
+            source_manifest["cleaned_training_rows_before_AMORPH_deduplication"] = len(supported_records)
+            source_manifest["num_training_classes_after_support_filter"] = len(post_filter_unique_counts)
             source_manifest["status"] = "prepared"
             write_json(output_dir / "public_dataset_manifest.json", source_manifest)
 
@@ -253,42 +319,35 @@ def main() -> int:
                 reverse=True,
             ) if runs_dir.exists() else []
             report_path = run_dirs[0] / "report.json" if run_dirs else None
-            if report_path and report_path.is_file():
-                report = json.loads(report_path.read_text(encoding="utf-8"))
-                source_manifest["amorph_run_id"] = report.get("run_id")
-                source_manifest["amorph_run_report_sha256"] = sha256_file(report_path)
-                source_manifest["amorph_report_status"] = report.get("status")
-                source_manifest["selected_strategy"] = report.get("strategy")
-                source_manifest["validation_metrics_all_candidates"] = report.get(
-                    "validation_metrics_all_candidates"
+            if report_path is None or not report_path.is_file():
+                raise RuntimeError(
+                    f"AMORPH did not produce a run report; process exit code was {run_exit_code}."
                 )
-                source_manifest["proofgate"] = report.get("proofgate")
-                source_manifest["acceptance_gate_metrics"] = report.get(
-                    "acceptance_gate_metrics"
-                )
-                source_manifest["test_split_used_for_selection"] = report.get(
-                    "test_split_used_for_selection"
-                )
-                source_manifest["amorph_warnings"] = report.get("warnings")
-                source_manifest["amorph_report_relative_path"] = report_path.relative_to(output_dir).as_posix()
-            else:
-                source_manifest["amorph_run_report_missing"] = True
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            source_manifest["amorph_run_id"] = report.get("run_id")
+            source_manifest["amorph_run_report_sha256"] = sha256_file(report_path)
+            source_manifest["amorph_report_status"] = report.get("status")
+            source_manifest["selected_strategy"] = report.get("strategy")
+            source_manifest["validation_metrics_all_candidates"] = report.get(
+                "validation_metrics_all_candidates"
+            )
+            source_manifest["proofgate"] = report.get("proofgate")
+            source_manifest["acceptance_gate_metrics"] = report.get("acceptance_gate_metrics")
+            source_manifest["test_split_used_for_selection"] = report.get("test_split_used_for_selection")
+            source_manifest["amorph_warnings"] = report.get("warnings")
+            source_manifest["amorph_report_relative_path"] = report_path.relative_to(output_dir).as_posix()
             source_manifest["train_process_exit_code"] = run_exit_code
             source_manifest["status"] = "completed" if run_exit_code == 0 else "train_process_failed"
             write_json(output_dir / "public_dataset_manifest.json", source_manifest)
-        except Exception as exc:
-            source_manifest["status"] = "failed"
-            source_manifest["error_type"] = type(exc).__name__
-            source_manifest["error_message"] = str(exc)
-            source_manifest["train_process_exit_code"] = run_exit_code
-            write_json(output_dir / "public_dataset_manifest.json", source_manifest)
-            print(f"Public RuNLU run failed: {type(exc).__name__}: {exc}", file=sys.stderr)
-            run_exit_code = run_exit_code or 1
-        finally:
-            # The downloaded parquet, temporary cleaned CSV, and Hub cache are not
-            # copied to output_dir or the uploaded GitHub Actions artifact.
-
-            pass
+    except Exception as exc:
+        source_manifest["status"] = "failed"
+        source_manifest["error_type"] = type(exc).__name__
+        source_manifest["error_message"] = str(exc)
+        if run_exit_code is None or run_exit_code == 0:
+            run_exit_code = 1
+        source_manifest["train_process_exit_code"] = run_exit_code
+        write_json(output_dir / "public_dataset_manifest.json", source_manifest)
+        print(f"Public RuNLU run failed: {type(exc).__name__}: {exc}", file=sys.stderr)
 
     inventory = build_artifact_inventory(output_dir)
     write_json(output_dir / "artifact_inventory.json", inventory)
@@ -297,17 +356,20 @@ def main() -> int:
         "dataset_revision": DATASET_REVISION,
         "source_split_loaded": "train",
         "official_test_used": False,
-        "cleaned_training_rows": source_manifest.get("cleaned_training_rows"),
-        "num_classes": (
-            source_manifest.get("dataset_prep_audit", {}).get("distinct_labels_after_conflict_removal")
+        "cleaned_training_rows_before_AMORPH_deduplication": source_manifest.get(
+            "cleaned_training_rows_before_AMORPH_deduplication"
         ),
+        "class_count_after_support_filter": source_manifest.get(
+            "num_training_classes_after_support_filter"
+        ),
+        "excluded_label_count": source_manifest.get("class_support_filter", {}).get("excluded_label_count"),
         "amorph_run_id": source_manifest.get("amorph_run_id"),
         "amorph_report_status": source_manifest.get("amorph_report_status"),
         "selected_strategy": source_manifest.get("selected_strategy"),
         "proofgate": source_manifest.get("proofgate"),
         "artifact_inventory_files": inventory["files_count"],
     }, indent=2, ensure_ascii=False))
-    return int(run_exit_code)
+    return int(run_exit_code if run_exit_code is not None else 1)
 
 
 if __name__ == "__main__":
