@@ -5,8 +5,21 @@ from pathlib import Path
 from amorph_autotrainer.cost import CostConfig
 from amorph_autotrainer.cli import main as cli_main
 from amorph_autotrainer.demo import create_demo_csv
-from amorph_autotrainer.pipeline import run_training
+from amorph_autotrainer.pipeline import run_training, _proofgate_may_accept_candidate
 from amorph_autotrainer.strategies import load_strategy_model, predict_loaded
+
+
+def test_proofgate_cutover_accepts_only_verified_real_challengers():
+    cases = [
+        ("e5", "ACCEPT", "match", True),
+        ("e5", "ACCEPT", "mismatch", False),
+        ("e5", "ACCEPT", "not_comparable_underpowered", False),
+        ("e5", "REJECT", "match", False),
+        ("e5", "INCONCLUSIVE", "match", False),
+        ("tfidf", "ACCEPT", "match", False),
+    ]
+    for strategy, verdict, parity, expected in cases:
+        assert _proofgate_may_accept_candidate(strategy, verdict, parity) is expected
 
 
 def test_end_to_end_tfidf_only(tmp_path):
@@ -52,14 +65,17 @@ def test_end_to_end_tfidf_only(tmp_path):
         "accepted", "target_not_met", "baseline_kept_candidate_rejected",
         "baseline_only", "baseline_self_comparison", "accepted_no_absolute_target",
         "acceptance_gate_underpowered", "acceptance_gate_inconclusive",
-        "acceptance_gate_conformance_failed",
+        "acceptance_gate_conformance_failed", "proofgate_legacy_parity_mismatch",
     }
     assert report["acceptance_gate_comparison"]["selected_candidate_scope"] == "baseline_self_comparison"
-    assert any("Shadow Proof Gate marks the TF-IDF self-comparison INCONCLUSIVE" in warning for warning in report["warnings"])
+    if report["proofgate"]["selected_candidate_subtype"] == "UNDERPOWERED":
+        assert any("Proof Gate returned INCONCLUSIVE / UNDERPOWERED" in warning for warning in report["warnings"])
+    else:
+        assert any("Proof Gate marked the TF-IDF self-comparison INCONCLUSIVE" in warning for warning in report["warnings"])
     assert report["proofgate"]["version"]
-    assert report["proofgate"]["mode"] == "shadow"
-    assert report["proofgate"]["decision_source"] == "legacy_gate_candidate"
-    assert report["proofgate"]["cutover_complete"] is False
+    assert report["proofgate"]["mode"] == "decision"
+    assert report["proofgate"]["decision_source"] == "proofgate.evaluate"
+    assert report["proofgate"]["cutover_complete"] is True
     proofgate_report = json.loads(
         (Path(result["run_dir"]) / report["proofgate"]["selected_candidate_report"])
         .read_text(encoding="utf-8")
@@ -68,10 +84,17 @@ def test_end_to_end_tfidf_only(tmp_path):
     assert proofgate_report["subtype"] in {"SELF_COMPARISON", "UNDERPOWERED"}
     assert proofgate_report["comparison"] is None
     assert proofgate_report["report_sha256"] == report["proofgate"]["selected_candidate_report_sha256"]
-    # Dual-write intentionally retains the legacy self-comparison pass during
-    # the transition; the shadow Proof Gate correctly refuses to call it ACCEPT.
-    assert report["selected_candidate_gate"]["passed"] is True
+    # After cut-over, self-comparison is INCONCLUSIVE and cannot be exposed as passed.
+    assert report["selected_candidate_gate"]["passed"] is False
     assert report["proofgate"]["selected_candidate_verdict"] == "INCONCLUSIVE"
+    assert report["proofgate"]["decision_passed"] is False
+    if report["acceptance_gate_sufficient"]:
+        assert proofgate_report["subtype"] == "SELF_COMPARISON"
+        assert report["proofgate"]["legacy_parity_status"] == "intentional_inconclusive_self_comparison"
+    else:
+        assert proofgate_report["subtype"] == "UNDERPOWERED"
+        assert report["proofgate"]["legacy_parity_status"] == "not_comparable_underpowered"
+    assert report["proofgate"]["legacy_selected_gate_passed"] is None
     assert report["tco_assumption_status"] == "assumed_free_inputs"
     assert "acceptance_gate_sufficient" in report
     data_report = json.loads((Path(result["run_dir"]) / "data_report.json").read_text(encoding="utf-8"))
@@ -121,13 +144,11 @@ def test_baseline_only_status_is_explicit_when_gate_is_sufficient(tmp_path):
     assert baseline_proofgate_report["verdict"] == "INCONCLUSIVE"
     assert baseline_proofgate_report["subtype"] == "SELF_COMPARISON"
     assert baseline_proofgate_report["comparison"] is None
-    # During Phase C dual-write the legacy decision path is intentionally preserved;
-    # this self-comparison pass is not a Proof Gate acceptance and the separate cut-over
-    # PR must switch this path before claiming single-source gate behavior.
-    assert report["final_acceptance_gate"]["passed"] is True
+    # C2 cut-over uses Proof Gate as decision source: no synthetic self-comparison pass.
+    assert report["final_acceptance_gate"]["passed"] is False
     assert report["proofgate"]["selected_candidate_verdict"] == "INCONCLUSIVE"
-    assert report["proofgate"]["shadow_parity_status"] == "intentional_inconclusive_self_comparison"
-    assert report["proofgate"]["legacy_selected_gate_passed"] is True
+    assert report["proofgate"]["legacy_parity_status"] == "intentional_inconclusive_self_comparison"
+    assert report["proofgate"]["legacy_selected_gate_passed"] is None
     manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
     assert manifest["proofgate"]["selected_candidate_report_sha256"] == proofgate_report["report_sha256"]
     # A downloaded selected-model directory must carry every provenance file its
@@ -142,7 +163,7 @@ def test_baseline_only_status_is_explicit_when_gate_is_sufficient(tmp_path):
     data_report = json.loads((Path(result["run_dir"]) / "data_report.json").read_text(encoding="utf-8"))
     assert proofgate_report["metadata"]["gate_split_sha256"] == data_report["splits"]["acceptance_gate"]["sha256"]
     replay = json.loads((Path(result["run_dir"]) / "replay.json").read_text(encoding="utf-8"))
-    assert replay["extra"]["proofgate_shadow"]["selected_candidate_report_sha256"] == proofgate_report["report_sha256"]
+    assert replay["extra"]["proofgate"]["selected_candidate_report_sha256"] == proofgate_report["report_sha256"]
 
 
 def test_cli_exit_code_4_when_acceptance_gate_is_underpowered(tmp_path, capsys):

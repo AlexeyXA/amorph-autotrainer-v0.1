@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from amorph_autotrainer.proofgate import Verdict, evaluate, write_report
+from amorph_autotrainer.metrics import classification_metrics, gate_candidate, paired_stratified_bootstrap_macro_f1
 
 
 def _balanced_labels(n_per_class=80):
@@ -34,6 +35,19 @@ def test_golden_accept_when_powered_and_candidate_is_noninferior():
     assert report.comparison["ci_lower"] >= -0.02
     assert report.to_legacy_gate_dict()["passed"] is True
 
+    # Independently recompute the legacy gate path; ACCEPT/REJECT must agree when powered.
+    baseline_metrics = classification_metrics(y, baseline)
+    candidate_metrics = classification_metrics(y, candidate)
+    legacy_comparison = paired_stratified_bootstrap_macro_f1(
+        y, baseline, candidate, n_bootstrap=200, seed=17
+    )
+    legacy = gate_candidate(
+        candidate_metrics, baseline_metrics, legacy_comparison,
+        min_macro_f1=None, noninferiority_margin=0.02,
+    )
+    assert legacy["passed"] is True
+    assert ("ACCEPT" if legacy["passed"] else "REJECT") == report.verdict
+
 
 def test_golden_reject_when_powered_candidate_is_worse_than_baseline():
     y = _balanced_labels()
@@ -54,6 +68,18 @@ def test_golden_reject_when_powered_candidate_is_worse_than_baseline():
     assert "noninferiority_not_established" in report.reason_codes
     assert report.comparison["ci_lower"] < -0.02
     assert report.to_legacy_gate_dict()["passed"] is False
+
+    baseline_metrics = classification_metrics(y, baseline)
+    candidate_metrics = classification_metrics(y, candidate)
+    legacy_comparison = paired_stratified_bootstrap_macro_f1(
+        y, baseline, candidate, n_bootstrap=200, seed=17
+    )
+    legacy = gate_candidate(
+        candidate_metrics, baseline_metrics, legacy_comparison,
+        min_macro_f1=None, noninferiority_margin=0.02,
+    )
+    assert legacy["passed"] is False
+    assert ("ACCEPT" if legacy["passed"] else "REJECT") == report.verdict
 
 
 def test_golden_underpowered_gate_is_inconclusive_not_accept():
