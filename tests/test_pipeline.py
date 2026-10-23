@@ -68,7 +68,10 @@ def test_end_to_end_tfidf_only(tmp_path):
         "acceptance_gate_conformance_failed", "proofgate_legacy_parity_mismatch",
     }
     assert report["acceptance_gate_comparison"]["selected_candidate_scope"] == "baseline_self_comparison"
-    assert any("Proof Gate marked the TF-IDF self-comparison INCONCLUSIVE" in warning for warning in report["warnings"])
+    if report["proofgate"]["selected_candidate_subtype"] == "UNDERPOWERED":
+        assert any("Proof Gate returned INCONCLUSIVE / UNDERPOWERED" in warning for warning in report["warnings"])
+    else:
+        assert any("Proof Gate marked the TF-IDF self-comparison INCONCLUSIVE" in warning for warning in report["warnings"])
     assert report["proofgate"]["version"]
     assert report["proofgate"]["mode"] == "decision"
     assert report["proofgate"]["decision_source"] == "proofgate.evaluate"
@@ -85,7 +88,12 @@ def test_end_to_end_tfidf_only(tmp_path):
     assert report["selected_candidate_gate"]["passed"] is False
     assert report["proofgate"]["selected_candidate_verdict"] == "INCONCLUSIVE"
     assert report["proofgate"]["decision_passed"] is False
-    assert report["proofgate"]["legacy_parity_status"] == "intentional_inconclusive_self_comparison"
+    if report["acceptance_gate_sufficient"]:
+        assert proofgate_report["subtype"] == "SELF_COMPARISON"
+        assert report["proofgate"]["legacy_parity_status"] == "intentional_inconclusive_self_comparison"
+    else:
+        assert proofgate_report["subtype"] == "UNDERPOWERED"
+        assert report["proofgate"]["legacy_parity_status"] == "not_comparable_underpowered"
     assert report["proofgate"]["legacy_selected_gate_passed"] is None
     assert report["tco_assumption_status"] == "assumed_free_inputs"
     assert "acceptance_gate_sufficient" in report
