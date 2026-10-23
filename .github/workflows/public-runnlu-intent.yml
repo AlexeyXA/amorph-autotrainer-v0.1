@@ -1,0 +1,58 @@
+name: Public RuNLU intent benchmark
+
+on:
+  push:
+    branches:
+      - experiments/public-runnlu-intent-20261023
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-runnlu-intent-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  public-runnlu:
+    name: Public Russian intent dataset run
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    env:
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Checkout pinned project revision
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install AMORPH, test and public-data dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[embeddings,test]"
+          python -m pip install pandas pyarrow huggingface_hub
+
+      - name: Verify public dataset preparation guards
+        run: python -m pytest tests/test_public_runnlu_benchmark.py
+
+      - name: Download pinned RuNLU train split and run AMORPH
+        run: |
+          python scripts/benchmark_public_runnlu_intent_ru.py \
+            --output-dir "$RUNNER_TEMP/public-runnlu-evidence" \
+            --max-runtime-seconds 4800 \
+            --bootstrap-samples 500
+
+      - name: Upload report, manifest, model bundle and SHA-256 inventory
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: amorph-public-runnlu-${{ github.run_id }}
+          path: ${{ runner.temp }}/public-runnlu-evidence/
+          if-no-files-found: warn
+          retention-days: 30
