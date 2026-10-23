@@ -57,6 +57,9 @@ def test_end_to_end_tfidf_only(tmp_path):
     assert report["acceptance_gate_comparison"]["selected_candidate_scope"] == "baseline_self_comparison"
     assert any("compared TF-IDF with itself" in warning for warning in report["warnings"])
     assert report["proofgate"]["version"]
+    assert report["proofgate"]["mode"] == "shadow"
+    assert report["proofgate"]["decision_source"] == "legacy_gate_candidate"
+    assert report["proofgate"]["cutover_complete"] is False
     proofgate_report = json.loads(
         (Path(result["run_dir"]) / report["proofgate"]["selected_candidate_report"])
         .read_text(encoding="utf-8")
@@ -115,7 +118,13 @@ def test_baseline_only_status_is_explicit_when_gate_is_sufficient(tmp_path):
     assert baseline_proofgate_report["verdict"] == "INCONCLUSIVE"
     assert baseline_proofgate_report["subtype"] == "SELF_COMPARISON"
     assert baseline_proofgate_report["comparison"] is None
-    assert report["final_acceptance_gate"]["passed"] is False
+    # During Phase C dual-write the legacy decision path is intentionally preserved;
+    # this self-comparison pass is not a Proof Gate acceptance and the separate cut-over
+    # PR must switch this path before claiming single-source gate behavior.
+    assert report["final_acceptance_gate"]["passed"] is True
+    assert report["proofgate"]["selected_candidate_verdict"] == "INCONCLUSIVE"
+    assert report["proofgate"]["shadow_parity_status"] == "intentional_inconclusive_self_comparison"
+    assert report["proofgate"]["legacy_selected_gate_passed"] is True
     manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
     assert manifest["proofgate"]["selected_candidate_report_sha256"] == proofgate_report["report_sha256"]
     # A downloaded selected-model directory must carry every provenance file its
