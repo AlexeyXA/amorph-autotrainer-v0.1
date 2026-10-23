@@ -291,7 +291,7 @@ def main() -> int:
             "noninferiority_margin": 0.01,
             "bootstrap_samples": args.bootstrap_samples,
             "min_gate_examples_per_class": 5,
-            "max_near_duplicate_audit_rows": 5000,
+            "max_near_duplicate_audit_rows": 6000,
             "min_macro_f1": None,
         },
         "status": "preparing",
@@ -355,7 +355,7 @@ def main() -> int:
                 "--noninferiority-margin", "0.01",
                 "--bootstrap-samples", str(args.bootstrap_samples),
                 "--min-gate-examples-per-class", "5",
-                "--max-near-duplicate-audit-rows", "5000",
+                "--max-near-duplicate-audit-rows", "6000",
                 "--e5-model-revision", E5_MODEL_REVISION,
             ]
             result = subprocess.run(command, check=False, capture_output=True, text=True)
