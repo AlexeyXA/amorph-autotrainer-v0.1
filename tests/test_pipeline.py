@@ -48,7 +48,12 @@ def test_end_to_end_tfidf_only(tmp_path):
     replay = json.loads(Path(result["run_dir"], "replay.json").read_text(encoding="utf-8"))
     assert replay["format"] == "amorph_replay_descriptor_v1"
     assert replay["descriptor_sha256"] == manifest["replay_descriptor"]["descriptor_sha256"]
-    assert report["status"] in {"accepted", "target_not_met", "baseline_kept_candidate_rejected", "baseline_only", "baseline_self_comparison", "accepted_no_absolute_target", "acceptance_gate_underpowered"}
+    assert report["status"] in {
+        "accepted", "target_not_met", "baseline_kept_candidate_rejected",
+        "baseline_only", "baseline_self_comparison", "accepted_no_absolute_target",
+        "acceptance_gate_underpowered", "acceptance_gate_inconclusive",
+        "acceptance_gate_conformance_failed",
+    }
     assert report["acceptance_gate_comparison"]["selected_candidate_scope"] == "baseline_self_comparison"
     assert any("compared TF-IDF with itself" in warning for warning in report["warnings"])
     assert report["proofgate"]["version"]
@@ -113,6 +118,15 @@ def test_baseline_only_status_is_explicit_when_gate_is_sufficient(tmp_path):
     assert report["final_acceptance_gate"]["passed"] is False
     manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
     assert manifest["proofgate"]["selected_candidate_report_sha256"] == proofgate_report["report_sha256"]
+    # A downloaded selected-model directory must carry every provenance file its
+    # manifest references, not rely on sibling files in the run root.
+    selected_dir = Path(result["manifest_path"]).parent
+    assert (selected_dir / "replay.json").is_file()
+    assert (selected_dir / "data_report.json").is_file()
+    selected_proofgate_copy = json.loads(
+        (selected_dir / proofgate_info["selected_candidate_report"]).read_text(encoding="utf-8")
+    )
+    assert selected_proofgate_copy["report_sha256"] == proofgate_report["report_sha256"]
     data_report = json.loads((Path(result["run_dir"]) / "data_report.json").read_text(encoding="utf-8"))
     assert proofgate_report["metadata"]["gate_split_sha256"] == data_report["splits"]["acceptance_gate"]["sha256"]
     replay = json.loads((Path(result["run_dir"]) / "replay.json").read_text(encoding="utf-8"))
