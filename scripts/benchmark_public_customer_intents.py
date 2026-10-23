@@ -164,6 +164,7 @@ def exclude_exact_test_text_overlaps(
     Only held-out input text is read; no held-out labels or metrics are accessed.
     This leakage-hygiene pass is performed before model fitting and selection.
     """
+    official_test_texts = list(official_test_texts)
     test_keys = {normalized_text(text) for text in official_test_texts if normalized_text(text)}
     overlap_keys = {
         normalized_text(row["text"])
@@ -176,7 +177,7 @@ def exclude_exact_test_text_overlaps(
         if normalized_text(row["text"]) not in test_keys
     ]
     audit = {
-        "official_test_input_rows_seen_without_labels": len(list(official_test_texts)) if not isinstance(official_test_texts, list) else len(official_test_texts),
+        "official_test_input_rows_seen_without_labels": len(official_test_texts),
         "official_test_normalized_text_keys": len(test_keys),
         "training_rows_removed_for_exact_normalized_test_text_overlap": len(raw_rows) - len(retained),
         "overlapping_normalized_text_keys": len(overlap_keys),
@@ -320,14 +321,26 @@ def run_dataset(dataset_key: str, output_dir: Path, max_runtime_seconds: int, bo
             )
         missing_label = "out_of_scope" if dataset_key == "clinc150" else None
         raw_train = materialize_rows(train_split, text_column, label_column, missing_label=missing_label)
+        # Leakage hygiene only: compare input text, without touching official test labels.
+        official_test_texts_for_hygiene = [
+            str(item.get(text_column) or "").strip() for item in test_split
+        ]
+        if any(not text for text in official_test_texts_for_hygiene):
+            raise ValueError("Official test contains empty text; refusing an unverifiable overlap audit.")
+        overlap_clean_train, overlap_audit = exclude_exact_test_text_overlaps(
+            raw_train, official_test_texts_for_hygiene
+        )
         prepared, preparation_audit = prepare_training_rows(
-            raw_train, max_per_class=int(cfg["max_per_class"]), seed=SEED
+            overlap_clean_train, max_per_class=int(cfg["max_per_class"]), seed=SEED
         )
         manifest.update({
             "source_text_column": text_column,
             "source_label_column": label_column,
             "official_train_canonical_sha256": canonical_rows_sha256(raw_train),
             "official_train_row_count": len(raw_train),
+            "training_rows_after_official_test_text_hygiene": len(overlap_clean_train),
+            "official_test_overlap_hygiene": overlap_audit,
+            "official_test_label_access_policy": "Official test input texts are used only to remove exact normalized-text overlaps from training before fitting; official test labels are not loaded until after selector and Proof Gate finish. Official test metrics are report-only.",
             "training_preparation_audit": preparation_audit,
             "sampled_training_csv_sha256": canonical_rows_sha256(prepared),
             "sampled_training_rows": len(prepared),
@@ -432,13 +445,13 @@ def run_dataset(dataset_key: str, output_dir: Path, max_runtime_seconds: int, bo
                 "official_test_canonical_sha256": canonical_rows_sha256(test_rows),
                 "official_test_metrics_by_strategy_report_only": model_metrics,
                 "official_test_exact_normalized_text_overlap_with_sampled_training": exact_text_overlap_count,
-                "official_test_overlap_policy": "reported after fitting; no test rows removed and overlap did not affect selection",
+                "official_test_overlap_policy": "Exact normalized-text overlaps were removed from training before fitting using test input text only; test labels were not read during the hygiene pass, and official test metrics remain report-only.",
                 "limits": [
                     "Public benchmark results are not owner-domain results.",
                     str(cfg["provenance_caveat"]),
                     "No stable source/customer group ID is exposed; random internal split cannot prove group-disjoint generalization.",
                     "Training was deterministically capped per class to keep the full near-duplicate audit under its 6000-row limit; this is not a full-training-set leaderboard run.",
-                    "Official test metrics are post-selection report-only; do not tune future parameters based on them.",
+                    "Official test input text is used only for exact-overlap hygiene; official test labels and metrics are not used for fitting, selector, or Proof Gate. Metrics are report-only; do not tune future parameters based on them.",
                     "TCO uses zero-valued cost inputs and is not actual monetary cost measurement.",
                 ],
             })
