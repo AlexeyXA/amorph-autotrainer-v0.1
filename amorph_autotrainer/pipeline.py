@@ -526,6 +526,7 @@ def run_training(
     # both from the run root and from the selected artifact directory.
     _write_json(final_artifact_dir / "replay.json", replay_descriptor)
     _write_json(final_artifact_dir / "data_report.json", bundle.report)
+    (final_artifact_dir / "proofgate").mkdir(parents=True, exist_ok=True)
     _write_json(final_artifact_dir / "proofgate" / "selected_candidate.json", selected_proofgate_payload)
     _write_json(final_artifact_dir / "proofgate" / "baseline_reference.json", baseline_proofgate_payload)
     warnings: list[str] = []
