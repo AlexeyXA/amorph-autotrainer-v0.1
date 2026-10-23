@@ -11,9 +11,11 @@ def test_conflicting_exact_text_rows_are_removed_without_relabeling():
     rows = [
         {"text": "Where is my order?", "label": "track_order"},
         {"text": "  where   is my ORDER? ", "label": "cancel_order"},
+    ]
+    rows.extend(
         {"text": f"unique {i}", "label": "alpha" if i < 30 else "beta"}
         for i in range(60)
-    ]
+    )
     prepared, audit = prepare_training_rows(rows, max_per_class=25)
     assert all("where is my order" not in row["text"].casefold() for row in prepared)
     assert audit["conflicting_normalized_text_keys_removed"] == 1
