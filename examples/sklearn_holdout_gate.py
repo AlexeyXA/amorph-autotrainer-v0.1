@@ -12,6 +12,7 @@ import csv
 import hashlib
 import json
 import platform
+import sys
 from collections import Counter
 from pathlib import Path
 from typing import Sequence
@@ -51,6 +52,8 @@ def load_csv(
         columns = reader.fieldnames
         if not columns:
             raise ValueError("CSV must contain a header row")
+        if len(set(columns)) != len(columns):
+            raise ValueError("CSV contains duplicate column names; make the header unique")
         required = {text_column, label_column}
         if group_column:
             required.add(group_column)
@@ -62,6 +65,8 @@ def load_csv(
         labels: list[str] = []
         groups: list[str] | None = [] if group_column else None
         for row_number, row in enumerate(reader, start=2):
+            if row.get(None):
+                raise ValueError(f"extra CSV fields in row {row_number}; make every row match the header")
             text = (row.get(text_column) or "").strip()
             label = (row.get(label_column) or "").strip()
             if not text:
@@ -278,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         payload = write_report(report, args.output)
     except (OSError, csv.Error, ValueError, RuntimeError) as exc:
-        print(f"sklearn_holdout_gate: error: {type(exc).__name__}: {exc}", file=__import__("sys").stderr)
+        print(f"sklearn_holdout_gate: error: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
 
     print(
