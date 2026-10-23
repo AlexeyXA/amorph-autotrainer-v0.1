@@ -23,6 +23,7 @@ test = ["pytest>=8.0"]
 
 [project.scripts]
 amorph-autotrainer = "amorph_autotrainer.cli:main"
+proofgate = "amorph_autotrainer.proofgate.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["amorph_autotrainer*"]
