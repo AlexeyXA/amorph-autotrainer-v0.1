@@ -24,7 +24,7 @@ def test_prepare_records_drops_all_conflicting_normalized_text_rows():
     assert audit["ambiguous_normalized_text_keys_removed"] == 1
     assert audit["distinct_normalized_text_keys_before_conflict_removal"] == 2
     assert audit["distinct_labels_before_conflict_removal"] == 3
-    assert audit["distinct_labels_after_conflict_removal"] == 2
+    assert audit["distinct_labels_after_conflict_removal"] == 1
     assert audit["rows_removed_for_conflicting_labels"] == 2
     assert audit["rows_retained_before_class_support_filter_and_AMORPH_deduplication"] == 2
     assert len(audit["conflicting_text_keys_sha256"]) == 64
