@@ -105,7 +105,7 @@ def test_split_encoder_scans_past_overlength_rows_without_cross_split_reassignme
         {"tree_id": "short-2", "prompt": "q2", "response": "a"},
     ]
     encoded, stats = encode_split_up_to_cap(
-        pairs, FakeTokenizer(), limit=2, max_length=5, seed=4, split_name="train"
+        pairs, FakeTokenizer(), limit=2, max_length=6, seed=4, split_name="train"
     )
     assert len(encoded) == 2
     assert stats["candidate_trees_scanned"] >= 2
