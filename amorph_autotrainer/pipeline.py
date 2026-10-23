@@ -521,6 +521,13 @@ def run_training(
         },
     )
     _write_json(root / "replay.json", replay_descriptor)
+    # The selected model directory is exported as a standalone artifact. Mirror
+    # the provenance files referenced by its manifest so relative paths resolve
+    # both from the run root and from the selected artifact directory.
+    _write_json(final_artifact_dir / "replay.json", replay_descriptor)
+    _write_json(final_artifact_dir / "data_report.json", bundle.report)
+    _write_json(final_artifact_dir / "proofgate" / "selected_candidate.json", selected_proofgate_payload)
+    _write_json(final_artifact_dir / "proofgate" / "baseline_reference.json", baseline_proofgate_payload)
     warnings: list[str] = []
     selected_gate_scope = (
         "baseline_self_comparison" if selected_name == "tfidf"
