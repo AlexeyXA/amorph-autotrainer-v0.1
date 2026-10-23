@@ -34,3 +34,65 @@ jobs:
             --out "$RUNNER_TEMP/amorph_runs" --strategies tfidf \
             --max-runtime-seconds 300 --max-candidates 1 \
             --bootstrap-samples 200 --min-gate-examples-per-class 5
+
+  llm-sft-oasst1-poc:
+    # Run expensive CPU model download/training only when the experiment PR is opened,
+    # or explicitly by workflow_dispatch on this branch. PR synchronize/doc edits use core CI only.
+    if: (github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'experiments/llm-sft-oasst1-poc-20261023' && github.event.action == 'opened') || (github.event_name == 'workflow_dispatch' && github.ref_name == 'experiments/llm-sft-oasst1-poc-20261023')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      HF_HUB_DISABLE_PROGRESS_BARS: "1"
+      TOKENIZERS_PARALLELISM: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: experiments/llm_sft_oasst1/requirements.txt
+      - name: Install CPU-only PyTorch and pinned experiment dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch==2.5.1
+          python -m pip install -r experiments/llm_sft_oasst1/requirements.txt pytest==8.3.4
+      - name: Run isolated dataset and gate unit tests
+        run: python -m pytest -q tests/test_llm_sft_oasst1_data.py tests/test_llm_sft_oasst1_gate.py
+      - name: Train pinned Qwen LoRA adapter on tree-disjoint Russian OASST1
+        run: |
+          python -m experiments.llm_sft_oasst1.train --output-dir llm_sft_poc_output --max-train-examples 128 --max-validation-examples 24 --max-gate-examples 32 --max-test-examples 32 --max-steps 16 --max-length 256 --bootstrap-samples 500
+      - name: Verify training outcome and every artifact checksum
+        if: success()
+        run: |
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          root = Path("llm_sft_poc_output")
+          result = json.loads((root / "benchmark_result.json").read_text(encoding="utf-8"))
+          assert result.get("status") == "completed", result
+          assert (root / "adapter" / "adapter_model.safetensors").is_file(), "LoRA weights were not saved"
+          manifest = json.loads((root / "artifact_inventory.json").read_text(encoding="utf-8"))
+          rows = manifest.get("files_sha256", [])
+          assert rows and manifest.get("file_count") == len(rows), "empty or inconsistent artifact inventory"
+          for row in rows:
+              rel = Path(row["path"])
+              assert not rel.is_absolute() and ".." not in rel.parts, row["path"]
+              path = root / rel
+              assert path.is_file(), f"missing artifact: {rel}"
+              assert path.stat().st_size == row["size_bytes"], f"size mismatch: {rel}"
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              assert digest == row["sha256"], f"SHA-256 mismatch: {rel}"
+          assert not any("prepared" in row["path"].lower() for row in rows), "raw/prepared dataset leaked into artifact"
+          print(f"Verified {len(rows)} artifact files; gate={result['quality_gate']['verdict']}; inventory hashes and sizes match.")
+          PY
+      - name: Upload adapter and evidence artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: amorph-oasst1-sft-poc
+          path: llm_sft_poc_output/
+          if-no-files-found: warn
+          retention-days: 14

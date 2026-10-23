@@ -1,0 +1,7 @@
+# Isolated dependencies; no change to the AMORPH core package requirements.
+transformers==4.46.3
+datasets==3.1.0
+accelerate==1.2.1
+peft==0.14.0
+safetensors==0.4.5
+huggingface_hub==0.26.2
