@@ -5,6 +5,7 @@ from scripts.benchmark_public_customer_intents import (
     canonical_rows_sha256,
     prepare_training_rows,
     resolve_label,
+    exclude_exact_test_text_overlaps,
 )
 
 
@@ -65,3 +66,20 @@ def test_missing_labels_fail_closed_without_a_predeclared_oos_mapping():
         assert "Missing label" in str(exc)
     else:
         raise AssertionError("Missing labels must fail closed without an explicit mapping")
+
+
+def test_exact_official_test_text_is_excluded_before_fit_without_using_labels():
+    train = [
+        {"text": "same text", "label": "alpha"},
+        {"text": "  SAME   TEXT  ", "label": "alpha"},
+        {"text": "training only 1", "label": "alpha"},
+        {"text": "training only 2", "label": "beta"},
+    ]
+    cleaned, audit = exclude_exact_test_text_overlaps(
+        train, ["Same text", "external test only"]
+    )
+    assert [row["text"] for row in cleaned] == ["training only 1", "training only 2"]
+    assert audit["training_rows_removed_for_exact_normalized_test_text_overlap"] == 2
+    assert audit["overlapping_normalized_text_keys"] == 1
+    assert audit["test_labels_read_during_hygiene"] is False
+    assert "same text" not in str(audit).casefold()
