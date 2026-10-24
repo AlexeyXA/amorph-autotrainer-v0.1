@@ -23,8 +23,10 @@ BANKING77_REVISION = "9d081458ff52e53cf7e848f414e6e9344e4e6696"
 BANKING77_URL = "https://raw.githubusercontent.com/PolyAI-LDN/task-specific-datasets/9d081458ff52e53cf7e848f414e6e9344e4e6696/banking_data"
 BANKING77_TRAIN_SHA256 = "b06e26ac675513959a63135f11b94ea7786ed02da65db93a5650d8838cbc664b"
 BANKING77_TEST_SHA256 = "d12d6e3bc4c3103966ae786dc435913c0c563dfa328f5a3646d0e62cfeeb474d"
-CLINC150_URL = "https://cdn.uci-ics-mlr-prod.aws.uci.edu/570/clinc150.zip"
+CLINC150_URL = "https://raw.githubusercontent.com/clinc/oos-eval/828f8093932c8fe6ca7936c3d2e52903b1c523de/data/data_full.json"
 CLINC150_CARD = "https://archive.ics.uci.edu/dataset/570/clinc150"
+CLINC150_SHA256 = "36923c3705a59e08fe9c3883d8bc2dd966ef93e22cb78ac41171782a698d56e0"
+CLINC150_REVISION = "828f8093932c8fe6ca7936c3d2e52903b1c523de"
 
 
 def sha256_file(path: Path) -> str:
@@ -113,36 +115,38 @@ def load_clinc150(cache: Path):
     import requests
 
     cache.mkdir(parents=True, exist_ok=True)
-    archive = cache / "clinc150.zip"
-    if not archive.exists():
+    source_file = cache / "data_full.json"
+    if not source_file.exists():
         response = requests.get(CLINC150_URL, timeout=(20, 120))
         response.raise_for_status()
-        archive.write_bytes(response.content)
-    archive_hash = sha256_file(archive)
-    if not zipfile.is_zipfile(archive):
-        raise RuntimeError("UCI CLINC150 URL did not return a ZIP archive")
-    with zipfile.ZipFile(archive) as zf:
-        members = [n for n in zf.namelist() if Path(n).name == "data_full.json"]
-        if len(members) != 1:
-            raise RuntimeError(f"Expected one data_full.json, found {members[:5]}")
-        raw = json.loads(zf.read(members[0]).decode("utf-8"))
+        payload = response.content
+        actual_hash = hashlib.sha256(payload).hexdigest()
+        if actual_hash != CLINC150_SHA256:
+            raise RuntimeError(
+                f"CLINC150 source checksum mismatch: expected {CLINC150_SHA256}, got {actual_hash}"
+            )
+        source_file.write_bytes(payload)
+    source_hash = sha256_file(source_file)
+    if source_hash != CLINC150_SHA256:
+        raise RuntimeError(
+            f"Cached CLINC150 checksum mismatch: expected {CLINC150_SHA256}, got {source_hash}"
+        )
+    raw = json.loads(source_file.read_text(encoding="utf-8"))
 
     def rows(items, split_name, force_label=None):
         out = []
         for item in items:
-            # In the canonical CLINC150 archive, OOS samples may be stored
-            # separately as strings rather than inside train/test as labelled pairs.
-            if force_label is not None and isinstance(item, str):
-                text, label = item, force_label
-            elif isinstance(item, (list, tuple)) and len(item) >= 2:
-                text, label = item[0], item[1]
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                text, label = item[0], (force_label if force_label is not None else item[1])
             elif isinstance(item, dict):
                 text = item.get("text", item.get("utterance"))
                 label = force_label or item.get("intent", item.get("label"))
             elif isinstance(item, str):
-                raise RuntimeError(
-                    f"Unlabelled CLINC150 row found in {split_name}; expected separate oos_* list or labelled pair"
-                )
+                if force_label is None:
+                    raise RuntimeError(
+                        f"Unlabelled CLINC150 row found in {split_name}; expected split-specific label"
+                    )
+                text, label = item, force_label
             else:
                 raise RuntimeError(f"Unexpected CLINC row in {split_name}: {type(item)}")
             text, label = str(text or "").strip(), str(label or "").strip()
@@ -154,28 +158,28 @@ def load_clinc150(cache: Path):
         raise RuntimeError(f"Unexpected CLINC split keys: {list(raw)}")
     train_rows = rows(raw["train"], "train")
     test_rows = rows(raw["test"], "test")
-    # Keep the documented 151st class in this closed-set benchmark, if present.
     if "oos_train" in raw:
         train_rows.extend(rows(raw["oos_train"], "oos_train", force_label="oos"))
     if "oos_test" in raw:
         test_rows.extend(rows(raw["oos_test"], "oos_test", force_label="oos"))
     return train_rows, test_rows, {
         "dataset_id": "UCI CLINC150 data_full.json",
-        "revision": archive_hash,
+        "revision": CLINC150_REVISION,
         "source_url": CLINC150_URL,
         "dataset_card_url": CLINC150_CARD,
-        "license": "CC BY 4.0",
-        "source_archive_sha256": archive_hash,
-        "source_archive_bytes": archive.stat().st_size,
-        "source_member": members[0],
-        "train_split": "official in-domain train plus explicit oos_train if present",
+        "license": "CC BY 4.0 (UCI dataset card)",
+        "source_file_sha256": source_hash,
+        "source_file_bytes": source_file.stat().st_size,
+        "source_file": "data/data_full.json",
+        "train_split": "official in-domain train plus explicit oos_train",
         "official_validation_rows_not_used": len(raw.get("val", [])) + len(raw.get("oos_val", [])),
-        "test_split": "official in-domain test plus explicit oos_test if present; report-only after selection and Proof Gate",
+        "test_split": "official in-domain test plus explicit oos_test; report-only after selection and Proof Gate",
         "oos_training_rows_included": len(raw.get("oos_train", [])),
         "oos_test_rows_included": len(raw.get("oos_test", [])),
         "limitations": [
             "OOS examples are treated as the explicit benchmark class 'oos'; this is closed-set classification, not open-world OOD detection.",
             "No reliable customer/session/source group ID is included; internal split is not group-disjoint.",
+            "Fetched file is pinned to a commit and required to match the published SHA-256 before parsing.",
         ],
     }
 
