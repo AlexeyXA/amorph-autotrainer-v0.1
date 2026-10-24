@@ -298,6 +298,7 @@ def run_training(
             })
             candidates.pop(name, None)
             val_metrics.pop(name, None)
+            validation_task_requirements.pop(name, None)
             if name == "tfidf":
                 raise RuntimeError(f"Required TF-IDF baseline failed strategy conformance: {exc}") from exc
 
