@@ -434,10 +434,7 @@ def run_training(
     ]
     validation_eligible_candidates = list(eligible)
     validation_eligible_challengers = [name for name in validation_eligible_candidates if name != "tfidf"]
-    if config.min_recall_by_label or config.min_precision_by_label:
-        selection_rule = "cheapest runtime proxy among candidates meeting aggregate threshold and all configured task-specific requirements"
-    else:
-        if not eligible:
+    if not eligible:
         # No method meets every configured criterion: keep the highest-Macro-F1 model only for diagnosis.
         # It is not validation-eligible and cannot be accepted as a challenger.
         eligible = [max(val_metrics, key=lambda name: val_metrics[name]["macro_f1"])]
