@@ -224,3 +224,28 @@ def test_early_runtime_budget_exhaustion_returns_exit_code_3(tmp_path, capsys):
     captured = capsys.readouterr()
     assert code == 3
     assert "Runtime budget exhausted" in captured.err
+
+
+
+def test_cli_fails_closed_when_mandatory_label_recall_requirement_is_not_demonstrated(tmp_path, capsys):
+    data_path = create_demo_csv(tmp_path / "task-requirement.csv", examples_per_class=30)
+    output_dir = tmp_path / "runs-task-requirement"
+    code = cli_main([
+        "train", str(data_path), "--out", str(output_dir),
+        "--strategies", "tfidf", "--max-candidates", "1",
+        "--max-runtime-seconds", "300", "--bootstrap-samples", "100",
+        "--min-recall-by-label", "oos=0.80",
+    ])
+
+    captured = capsys.readouterr()
+    assert code == 5
+    payload = json.loads(captured.out)
+    assert payload["business_requirements_passed"] is False
+    assert payload["task_requirements"]["configured"] is True
+    assert payload["task_requirements"]["selected_candidate_validation_passed"] is False
+    report = json.loads(Path(payload["report_path"]).read_text(encoding="utf-8"))
+    assert report["status"] == "task_requirements_not_met"
+    gate_result = report["task_requirements"]["baseline_acceptance_gate"]
+    assert gate_result["passed"] is False
+    assert "required_label_missing_from_evaluation" in gate_result["reasons"]
+    assert any("No candidate is demonstrated" in item for item in report["warnings"])
