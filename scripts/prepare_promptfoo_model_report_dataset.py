@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import statistics
+import unicodedata
 import urllib.request
 from collections import Counter
 from datetime import datetime, timezone
@@ -210,6 +211,53 @@ def main() -> int:
     write_three_column_csv(response_path, response_rows)
     write_three_column_csv(topic_path, topic_rows)
 
+    # Exact normalized answer text that maps to multiple model labels is inherently
+    # ambiguous for source attribution. Remove entire question groups containing such
+    # a conflict rather than dropping arbitrary rows or hiding conflicting labels.
+    def normalize_answer(value: str) -> str:
+        return " ".join(unicodedata.normalize("NFKC", value).strip().casefold().split())
+
+    answer_labels: dict[str, set[str]] = {}
+    normalized_by_row: list[str] = []
+    for item in response_rows:
+        normalized = normalize_answer(item["text"])
+        normalized_by_row.append(normalized)
+        answer_labels.setdefault(normalized, set()).add(item["label"])
+    conflicting_texts = {text for text, labels in answer_labels.items() if len(labels) > 1}
+    conflicting_rows = [
+        item for item, normalized in zip(response_rows, normalized_by_row)
+        if normalized in conflicting_texts
+    ]
+    dropped_group_ids = {
+        item["group_id"] for item, normalized in zip(response_rows, normalized_by_row)
+        if normalized in conflicting_texts
+    }
+    conflict_free_rows = [
+        item for item in response_rows if item["group_id"] not in dropped_group_ids
+    ]
+    conflict_free_group_counts = Counter(item["group_id"] for item in conflict_free_rows)
+    if any(count != len(MODEL_COLUMNS) for count in conflict_free_group_counts.values()):
+        raise RuntimeError("Conflict-free set must retain all four model responses for every retained question")
+    if len(conflict_free_rows) != (len(source_rows) - len(dropped_group_ids)) * len(MODEL_COLUMNS):
+        raise RuntimeError("Conflict-free group filtering produced an unexpected row count")
+
+    conflict_free_path = out / "model_response_source_attribution_conflict_free.csv"
+    write_three_column_csv(conflict_free_path, conflict_free_rows)
+    conflict_audit = {
+        "normalization": "Unicode NFKC, strip, casefold, collapse whitespace",
+        "normalized_answer_keys": len(answer_labels),
+        "conflicting_normalized_answer_keys": len(conflicting_texts),
+        "rows_with_conflicting_text_keys": len(conflicting_rows),
+        "question_groups_removed_as_units": len(dropped_group_ids),
+        "rows_removed_as_groups": len(dropped_group_ids) * len(MODEL_COLUMNS),
+        "retained_question_groups": len(conflict_free_group_counts),
+        "retained_response_rows": len(conflict_free_rows),
+        "retained_rows_per_model": dict(sorted(Counter(item["label"] for item in conflict_free_rows).items())),
+        "conflict_key_set_sha256": sha256_bytes("\\n".join(sorted(conflicting_texts)).encode("utf-8")),
+        "policy": "exclude whole question_id groups if any normalized response text is shared by different model labels; original CSV remains unchanged",
+        "raw_conflicting_texts_published": False,
+    }
+
     # Joined workload profile: actual Promptfoo question text + stored historical response.
     topic_by_group = {row["group_id"]: row for row in topic_rows}
     workload_rows: list[dict[str, Any]] = []
@@ -362,12 +410,20 @@ def main() -> int:
         "unique_group_ids": len(group_counts),
         "model_response_label_counts": dict(sorted(label_counts.items())),
         "topic_label_counts": dict(sorted(Counter(r["label"] for r in topic_rows).items())),
+        "source_attribution_conflict_audit": conflict_audit,
         "outputs": {
             response_path.name: {
                 "rows": len(response_rows),
                 "sha256": sha256_file(response_path),
                 "columns": ["text", "label", "group_id"],
-                "task": "classify which of the four model families produced a response",
+                "task": "raw source-attribution task; known exact-text cross-label conflicts remain by design and must not be trained on without handling",
+            },
+            conflict_free_path.name: {
+                "rows": len(conflict_free_rows),
+                "sha256": sha256_file(conflict_free_path),
+                "columns": ["text", "label", "group_id"],
+                "task": "source-attribution training/evaluation set after removing whole question groups with normalized exact text conflicts across model labels",
+                "conflict_audit": conflict_audit,
             },
             topic_path.name: {
                 "rows": len(topic_rows),
@@ -425,6 +481,9 @@ def main() -> int:
         "response_rows": len(response_rows),
         "labels": dict(sorted(label_counts.items())),
         "group_ids": len(group_counts),
+        "conflict_free_rows": len(conflict_free_rows),
+        "conflict_free_group_ids": len(conflict_free_group_counts),
+        "dropped_ambiguous_group_ids": len(dropped_group_ids),
         "outputs": manifest["outputs"],
         "tco_scenario_rows": len(tco_rows),
         "common_profile_tco_scenario_rows": len(common_rows),
