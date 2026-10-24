@@ -105,14 +105,22 @@ def load_clinc150(cache: Path):
             raise RuntimeError(f"Expected one data_full.json, found {members[:5]}")
         raw = json.loads(zf.read(members[0]).decode("utf-8"))
 
-    def rows(split_name):
+    def rows(items, split_name, force_label=None):
         out = []
-        for item in raw[split_name]:
-            if isinstance(item, (list, tuple)) and len(item) >= 2:
+        for item in items:
+            # In the canonical CLINC150 archive, OOS samples may be stored
+            # separately as strings rather than inside train/test as labelled pairs.
+            if force_label is not None and isinstance(item, str):
+                text, label = item, force_label
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
                 text, label = item[0], item[1]
             elif isinstance(item, dict):
                 text = item.get("text", item.get("utterance"))
-                label = item.get("intent", item.get("label"))
+                label = force_label or item.get("intent", item.get("label"))
+            elif isinstance(item, str):
+                raise RuntimeError(
+                    f"Unlabelled CLINC150 row found in {split_name}; expected separate oos_* list or labelled pair"
+                )
             else:
                 raise RuntimeError(f"Unexpected CLINC row in {split_name}: {type(item)}")
             text, label = str(text or "").strip(), str(label or "").strip()
@@ -122,7 +130,14 @@ def load_clinc150(cache: Path):
 
     if "train" not in raw or "test" not in raw:
         raise RuntimeError(f"Unexpected CLINC split keys: {list(raw)}")
-    return rows("train"), rows("test"), {
+    train_rows = rows(raw["train"], "train")
+    test_rows = rows(raw["test"], "test")
+    # Keep the documented 151st class in this closed-set benchmark, if present.
+    if "oos_train" in raw:
+        train_rows.extend(rows(raw["oos_train"], "oos_train", force_label="oos"))
+    if "oos_test" in raw:
+        test_rows.extend(rows(raw["oos_test"], "oos_test", force_label="oos"))
+    return train_rows, test_rows, {
         "dataset_id": "UCI CLINC150 data_full.json",
         "revision": archive_hash,
         "source_url": CLINC150_URL,
@@ -131,15 +146,16 @@ def load_clinc150(cache: Path):
         "source_archive_sha256": archive_hash,
         "source_archive_bytes": archive.stat().st_size,
         "source_member": members[0],
-        "train_split": "official train only",
-        "official_validation_rows_not_used": len(raw.get("val", [])),
-        "test_split": "official test; report-only after selector and Proof Gate",
+        "train_split": "official in-domain train plus explicit oos_train if present",
+        "official_validation_rows_not_used": len(raw.get("val", [])) + len(raw.get("oos_val", [])),
+        "test_split": "official in-domain test plus explicit oos_test if present; report-only after selection and Proof Gate",
+        "oos_training_rows_included": len(raw.get("oos_train", [])),
+        "oos_test_rows_included": len(raw.get("oos_test", [])),
         "limitations": [
             "OOS examples are treated as the explicit benchmark class 'oos'; this is closed-set classification, not open-world OOD detection.",
             "No reliable customer/session/source group ID is included; internal split is not group-disjoint.",
         ],
     }
-
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
