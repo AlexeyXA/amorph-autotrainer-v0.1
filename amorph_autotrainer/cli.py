@@ -22,6 +22,30 @@ def _write_json(path: Path, data: Any) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
 
 
+def _parse_label_thresholds(values: list[str] | None, *, argument_name: str) -> dict[str, float] | None:
+    """Parse repeatable label=threshold CLI values without silently accepting malformed input."""
+    if not values:
+        return None
+    parsed: dict[str, float] = {}
+    for raw in values:
+        if "=" not in raw:
+            raise ValueError(f"{argument_name} entries must use LABEL=THRESHOLD format: {raw!r}")
+        label, raw_threshold = raw.split("=", 1)
+        label = label.strip()
+        if not label:
+            raise ValueError(f"{argument_name} label must not be empty")
+        if label in parsed:
+            raise ValueError(f"{argument_name} label {label!r} was specified more than once")
+        try:
+            threshold = float(raw_threshold)
+        except ValueError as exc:
+            raise ValueError(f"{argument_name} threshold must be numeric for label {label!r}") from exc
+        if not np.isfinite(threshold) or not 0 <= threshold <= 1:
+            raise ValueError(f"{argument_name} threshold must be finite and in [0, 1] for label {label!r}")
+        parsed[label] = threshold
+    return parsed
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="amorph-autotrainer",
@@ -65,6 +89,16 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--hybrid-class-weight", choices=("none", "balanced"), default="none",
                        help="Hybrid TF-IDF+E5 LogisticRegression class weight")
     train.add_argument("--min-macro-f1", type=float, default=None)
+    train.add_argument(
+        "--min-recall-by-label", action="append", default=[],
+        metavar="LABEL=THRESHOLD",
+        help="Repeat for each mandatory class recall floor, e.g. --min-recall-by-label oos=0.80",
+    )
+    train.add_argument(
+        "--min-precision-by-label", action="append", default=[],
+        metavar="LABEL=THRESHOLD",
+        help="Repeat for each mandatory class precision floor, e.g. --min-precision-by-label refund=0.95",
+    )
     train.add_argument("--noninferiority-margin", type=float, default=0.01)
     train.add_argument("--bootstrap-samples", type=int, default=500)
     train.add_argument("--min-gate-examples-per-class", type=int, default=5)
@@ -131,6 +165,12 @@ def main(argv: list[str] | None = None) -> int:
                 human_hours=args.human_hours,
                 human_eur_per_hour=args.human_eur_per_hour,
                 min_macro_f1=args.min_macro_f1,
+                min_recall_by_label=_parse_label_thresholds(
+                    args.min_recall_by_label, argument_name="--min-recall-by-label"
+                ),
+                min_precision_by_label=_parse_label_thresholds(
+                    args.min_precision_by_label, argument_name="--min-precision-by-label"
+                ),
                 noninferiority_margin=args.noninferiority_margin,
                 bootstrap_samples=args.bootstrap_samples,
                 min_gate_examples_per_class=args.min_gate_examples_per_class,
@@ -157,6 +197,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result, indent=2, ensure_ascii=False))
             if result.get("runtime_budget_exceeded"):
                 return 3
+            if result.get("business_requirements_passed") is False:
+                return 5
             if not result.get("acceptance_gate_sufficient", False):
                 return 4
             return 2 if result["absolute_target_passed"] is False else 0
