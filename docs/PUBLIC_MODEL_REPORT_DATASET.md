@@ -24,6 +24,22 @@ The GitHub Actions workflow `Prepare public four-model report dataset` downloads
 
 ### 1. `model_response_source_attribution.csv`
 
+Exactly three columns: `text,label,group_id`. This is the raw derived view of the source and still contains a small number of exact normalized answers shared between different model labels. Do not run the current AMORPH training pipeline on this raw version without conflict handling: `load_records` correctly rejects contradictory labels for identical normalized text.
+
+### 2. `model_response_source_attribution_conflict_free.csv`
+
+Also exactly three columns: `text,label,group_id`. This is the recommended training/evaluation input for AMORPH. The preparation script normalizes each response with Unicode NFKC, trim, casefold and whitespace collapse. If an identical normalized response appears with multiple model labels, it removes **the entire question group** rather than deleting an arbitrary answer. This preserves the grouped-split unit and equal model counts per retained question. The provenance manifest records the number of conflicting normalized answers, rows/groups excluded and SHA-256 of the conflict-key set; it never stores the raw conflicting texts.
+
+```bash
+amorph-autotrainer train model_response_source_attribution_conflict_free.csv \
+  --text-column text --label-column label --group-column group_id \
+  --strategies tfidf,e5 --max-candidates 2 --out runs/model-source-attribution
+```
+
+The expected current source snapshot retains 2,495 of 2,500 question groups (9,980 response rows) after dropping 5 groups containing 3 conflicting normalized response texts. This count is verified by the pinned preparation run, but the script recalculates it on every run and fails closed on schema/count changes.
+
+### 3. `political_question_topic.csv`
+
 Exactly three columns: `text,label,group_id`.
 
 - `text`: the complete response from one model.
