@@ -1,0 +1,143 @@
+name: Public real-task verification
+
+on:
+  push:
+    branches:
+      - research/real-task-verification-20261024
+    paths:
+      - "scripts/benchmark_public_tasks.py"
+      - "scripts/benchmark_massive_ru.py"
+      - "amorph_autotrainer/**"
+      - ".github/workflows/public-real-task-benchmarks.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  public-task:
+    name: Public task - ${{ matrix.task }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - task: banking77
+            output_dir: banking77
+          - task: clinc150
+            output_dir: clinc150
+          - task: massive_ru
+            output_dir: massive_ru
+    env:
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      TOKENIZERS_PARALLELISM: "false"
+    steps:
+      - name: Checkout pinned source revision
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install package, CPU embeddings and data readers
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.0"
+          python -m pip install -e ".[test,embeddings]" "datasets==3.3.2" pandas pyarrow huggingface_hub requests
+      - name: Run tests before public-data benchmark
+        run: |
+          python -m pytest
+          python -m compileall -q amorph_autotrainer scripts
+      - name: Record start time
+        id: clock
+        run: |
+          echo "started_epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
+          echo "started_utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+      - name: Run actual public labelled task
+        run: |
+          if [ "${{ matrix.task }}" = "massive_ru" ]; then
+            python scripts/benchmark_massive_ru.py \
+              --with-e5 \
+              --output-dir "benchmark_runs/${{ matrix.output_dir }}" \
+              --max-runtime-seconds 7200
+          else
+            python scripts/benchmark_public_tasks.py \
+              --dataset "${{ matrix.task }}" \
+              --with-e5 \
+              --output-dir "benchmark_runs/${{ matrix.output_dir }}" \
+              --max-runtime-seconds 7200 \
+              --expected-queries 1000
+          fi
+      - name: Record immutable execution manifest and summary
+        if: always()
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+          ACTIONS_RUN_ID: ${{ github.run_id }}
+          ACTIONS_RUN_ATTEMPT: ${{ github.run_attempt }}
+          TASK: ${{ matrix.task }}
+          OUTPUT_DIR: benchmark_runs/${{ matrix.output_dir }}
+          STARTED_UTC: ${{ steps.clock.outputs.started_utc }}
+          STARTED_EPOCH: ${{ steps.clock.outputs.started_epoch }}
+        run: |
+          python - <<'PY'
+          import hashlib, json, os, platform, time
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          out = Path(os.environ["OUTPUT_DIR"])
+          out.mkdir(parents=True, exist_ok=True)
+          result_path = out / "benchmark_result.json"
+          provenance_path = out / "dataset_provenance.json"
+          manifest_path = out / "execution_manifest.json"
+          result = json.loads(result_path.read_text(encoding="utf-8")) if result_path.is_file() else {}
+          provenance = json.loads(provenance_path.read_text(encoding="utf-8")) if provenance_path.is_file() else {}
+          prior = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
+          files = []
+          for path in sorted(out.rglob("*")):
+              if not path.is_file() or path.name == "execution_manifest.json" or "cache" in path.parts:
+                  continue
+              files.append({"path": str(path), "size_bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+          try:
+              elapsed = max(0, int(time.time()) - int(os.environ.get("STARTED_EPOCH") or time.time()))
+          except ValueError:
+              elapsed = None
+          nested = result.get("dataset_provenance", {})
+          manifest = {
+              **prior,
+              "status": "result_written" if result else "incomplete_or_failed",
+              "task": os.environ["TASK"],
+              "source_commit": os.environ["SOURCE_COMMIT"],
+              "workflow_run_id": os.environ["ACTIONS_RUN_ID"],
+              "workflow_run_attempt": os.environ["ACTIONS_RUN_ATTEMPT"],
+              "started_at_utc": os.environ.get("STARTED_UTC"),
+              "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+              "elapsed_seconds": elapsed,
+              "python_version": platform.python_version(),
+              "dataset_id": provenance.get("dataset_id", provenance.get("dataset", nested.get("dataset_id", "AmazonScience/massive"))),
+              "dataset_revision": provenance.get("revision", provenance.get("dataset_revision", nested.get("revision", nested.get("dataset_revision")))),
+              "selected_strategy": result.get("selected_strategy"),
+              "official_test_metrics": result.get("external_official_test_metrics_by_strategy", result.get("external_test_metrics_by_strategy", {})),
+              "file_inventory_sha256": files,
+          }
+          manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as f:
+              f.write("# Public real-task verification\n\n")
+              f.write(f"- Task: {manifest['task']}\n- Status: {manifest['status']}\n")
+              f.write(f"- Source commit: {manifest['source_commit']}\n- Dataset revision: {manifest['dataset_revision']}\n")
+              f.write(f"- Selected strategy: {manifest['selected_strategy']}\n- Elapsed seconds: {manifest['elapsed_seconds']}\n\n")
+              f.write("Official test is report-only; no owner-private data or hosted LLM API is used.\n\n")
+              f.write("Official-test metrics (JSON):\n\n" + json.dumps(manifest["official_test_metrics"], indent=2, ensure_ascii=False) + "\n")
+          PY
+      - name: Upload benchmark evidence (no raw CSV)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: amorph-public-task-${{ matrix.task }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            benchmark_runs/${{ matrix.output_dir }}/benchmark_result.json
+            benchmark_runs/${{ matrix.output_dir }}/dataset_provenance.json
+            benchmark_runs/${{ matrix.output_dir }}/execution_manifest.json
+            benchmark_runs/${{ matrix.output_dir }}/runs/**
+          if-no-files-found: warn
+          retention-days: 30

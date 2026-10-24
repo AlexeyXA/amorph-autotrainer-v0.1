@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import importlib.metadata
 import platform
 import subprocess
@@ -16,7 +17,7 @@ import numpy as np
 from .cost import CostConfig, estimate_tco_eur
 from .data import load_records, split_records
 from .experiment_db import ExperimentDB
-from .metrics import classification_metrics, gate_candidate, paired_stratified_bootstrap_macro_f1
+from .metrics import classification_metrics, evaluate_task_requirements, gate_candidate, paired_stratified_bootstrap_macro_f1
 from .proofgate import PROOFGATE_VERSION, Verdict, evaluate as evaluate_proofgate
 from .strategies import E5Candidate, HybridTfidfE5Candidate, TfidfCandidate, FittedCandidate
 from .strategy_abi import build_replay_descriptor, run_conformance_checks
@@ -109,6 +110,117 @@ def _validate_strategy_names(names: list[str]) -> list[str]:
     return cleaned
 
 
+def _choose_candidate_by_objective(
+    eligible_names: list[str],
+    *,
+    fit_seconds_by_strategy: dict[str, float],
+    inference_seconds_per_query_by_strategy: dict[str, float],
+    config: CostConfig,
+    preprocessing_seconds: float = 0.0,
+    diagnostic_only: bool = False,
+) -> tuple[str, dict[str, Any]]:
+    """Choose an eligible candidate by runtime proxy or estimated euro TCO.
+
+    TCO includes shared costs plus per-strategy usage/setup inputs. Shared cost
+    components are reported but cancel out in candidate ranking. Ties on TCO are
+    broken by runtime proxy and are explicitly reported.
+    """
+    if not eligible_names:
+        raise ValueError("At least one candidate is required for selection")
+    costs: dict[str, dict[str, Any]] = {}
+    for name in eligible_names:
+        if name not in fit_seconds_by_strategy or name not in inference_seconds_per_query_by_strategy:
+            raise ValueError(f"Missing runtime measurements for candidate {name!r}")
+        costs[name] = estimate_tco_eur(
+            fit_seconds=preprocessing_seconds + fit_seconds_by_strategy[name],
+            inference_seconds_per_query=inference_seconds_per_query_by_strategy[name],
+            config=config,
+            strategy_name=name,
+        )
+        # Preserve historical runtime proxy exactly: candidate fit + Q * candidate latency.
+        costs[name]["candidate_runtime_proxy_seconds"] = (
+            max(0.0, fit_seconds_by_strategy[name])
+            + max(0.0, inference_seconds_per_query_by_strategy[name]) * config.expected_queries
+        )
+
+    if config.selection_objective == "runtime_proxy":
+        selected_name = min(eligible_names, key=lambda name: costs[name]["candidate_runtime_proxy_seconds"])
+        tie_breaker = "runtime_proxy_minimum"
+        minimum_tco = min(float(costs[name]["estimated_tco_eur"]) for name in eligible_names)
+        tied_names = [
+            name for name in eligible_names
+            if math.isclose(float(costs[name]["estimated_tco_eur"]), minimum_tco, rel_tol=1e-12, abs_tol=1e-12)
+        ]
+    else:
+        minimum_tco = min(float(costs[name]["estimated_tco_eur"]) for name in eligible_names)
+        tied_names = [
+            name for name in eligible_names
+            if math.isclose(float(costs[name]["estimated_tco_eur"]), minimum_tco, rel_tol=1e-12, abs_tol=1e-12)
+        ]
+        selected_name = min(tied_names, key=lambda name: costs[name]["candidate_runtime_proxy_seconds"])
+        tie_breaker = "runtime_proxy_for_equal_tco" if len(tied_names) > 1 else "none"
+
+    unique_tco_values = {
+        round(float(costs[name]["estimated_tco_eur"]), 12) for name in eligible_names
+    }
+    selector_report = {
+        "selection_objective": config.selection_objective,
+        "selected_strategy": selected_name,
+        "selection_status": (
+            "diagnostic_only_no_validation_eligible_candidates"
+            if diagnostic_only else "selected_among_validation_eligible_candidates"
+        ),
+        "diagnostic_only": bool(diagnostic_only),
+        "eligible_candidates": [] if diagnostic_only else list(eligible_names),
+        "candidates_considered": list(eligible_names),
+        "candidate_costs": costs,
+        "minimum_estimated_tco_eur": float(minimum_tco),
+        "tco_tied_candidates": tied_names,
+        "tie_breaker": tie_breaker,
+        "candidate_tco_values_differ": len(unique_tco_values) > 1,
+        "expected_queries": int(config.expected_queries),
+        "monetary_rate_inputs": {
+            "compute_eur_per_hour": config.compute_eur_per_hour,
+            "strategy_usage_cost_eur_per_query": config.strategy_usage_cost_eur_per_query or {},
+            "strategy_fixed_cost_eur": config.strategy_fixed_cost_eur or {},
+            "fixed_data_cost_eur": config.fixed_data_cost_eur,
+            "maintenance_cost_eur": config.maintenance_cost_eur,
+            "human_hours": config.human_hours,
+            "human_eur_per_hour": config.human_eur_per_hour,
+        },
+        "interpretation": (
+            "TCO is an estimate from supplied rates, expected query volume and fit/latency measurements. "
+            "Unspecified strategy-specific components are treated as zero unless the zero-rate TCO mode "
+            "requires explicit per-strategy inputs. If candidate TCO ties, runtime proxy is only a tie-breaker. "
+            + (
+                "No candidate met validation requirements; this ranking is diagnostic only and is not a quality-eligible selection. "
+                if diagnostic_only else ""
+            )
+        ),
+    }
+    if config.selection_objective == "tco" and config.compute_eur_per_hour > 0:
+        missing_components = {
+            name: [
+                component for component, mapping in (
+                    ("strategy_usage_cost_eur_per_query", config.strategy_usage_cost_eur_per_query or {}),
+                    ("strategy_fixed_cost_eur", config.strategy_fixed_cost_eur or {}),
+                )
+                if name not in mapping
+            ]
+            for name in eligible_names
+        }
+        if any(missing_components.values()):
+            selector_report["assumed_zero_strategy_components"] = {
+                name: components for name, components in missing_components.items() if components
+            }
+            selector_report["warning"] = (
+                "One or more strategy-specific usage/setup cost components were not supplied and are treated as zero. "
+                "With only a uniform compute rate and shared costs, ranking is mathematically equivalent to runtime proxy; "
+                "supply differing candidate-specific rates when applicable."
+            )
+    return selected_name, selector_report
+
+
 def run_training(
     *,
     csv_path: str | Path,
@@ -135,6 +247,18 @@ def run_training(
     strategy_names = strategy_names[:config.max_candidates]
     if "tfidf" not in strategy_names:
         strategy_names = ["tfidf"] + strategy_names[:-1]
+    if config.selection_objective == "tco" and config.compute_eur_per_hour == 0:
+        usage_map = config.strategy_usage_cost_eur_per_query or {}
+        fixed_map = config.strategy_fixed_cost_eur or {}
+        missing_usage = [name for name in strategy_names if name not in usage_map]
+        missing_fixed = [name for name in strategy_names if name not in fixed_map]
+        if missing_usage or missing_fixed:
+            raise ValueError(
+                "selection_objective='tco' with compute_eur_per_hour=0 requires explicit "
+                "strategy_usage_cost_eur_per_query and strategy_fixed_cost_eur entries for every "
+                f"requested strategy; missing usage rates={missing_usage}, missing fixed costs={missing_fixed}. "
+                "An explicit 0.0 is allowed when a component is genuinely free."
+            )
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
     root = Path(output_dir) / run_id
@@ -176,6 +300,7 @@ def run_training(
 
     candidates: dict[str, FittedCandidate] = {}
     val_metrics: dict[str, dict[str, Any]] = {}
+    validation_task_requirements: dict[str, dict[str, Any]] = {}
     candidate_errors: dict[str, str] = {}
 
     for name in strategy_names:
@@ -213,15 +338,24 @@ def run_training(
                 raise ValueError(f"Unsupported strategy: {name}")
 
             metrics = classification_metrics(bundle.val_labels, candidate.val_pred)
+            task_requirements = evaluate_task_requirements(
+                bundle.val_labels,
+                candidate.val_pred,
+                min_recall_by_label=config.min_recall_by_label,
+                min_precision_by_label=config.min_precision_by_label,
+            )
             candidates[name] = candidate
             val_metrics[name] = metrics
+            validation_task_requirements[name] = task_requirements
             _write_json(candidate_dir / "validation_metrics.json", metrics)
+            _write_json(candidate_dir / "task_requirements_validation.json", task_requirements)
             _write_json(candidate_dir / "strategy.json", strategy_metadata)
 
             cost = estimate_tco_eur(
                 fit_seconds=preprocessing_seconds + candidate.fit_seconds,
                 inference_seconds_per_query=candidate.latency_seconds_per_example,
                 config=config,
+                strategy_name=name,
             )
             database.record({
                 "run_id": run_id,
@@ -289,6 +423,7 @@ def run_training(
             })
             candidates.pop(name, None)
             val_metrics.pop(name, None)
+            validation_task_requirements.pop(name, None)
             if name == "tfidf":
                 raise RuntimeError(f"Required TF-IDF baseline failed strategy conformance: {exc}") from exc
 
@@ -306,22 +441,33 @@ def run_training(
     eligible = [
         name for name, met in val_metrics.items()
         if met["macro_f1"] >= threshold
+        and validation_task_requirements[name].get("passed") is not False
     ]
     validation_eligible_candidates = list(eligible)
     validation_eligible_challengers = [name for name in validation_eligible_candidates if name != "tfidf"]
-    selection_rule = "cheapest runtime proxy among validation candidates meeting threshold"
     if not eligible:
-        # No method meets target: do not hide the failure; keep the best validation candidate
-        # for final diagnosis, but the global quality gate will fail.
+        # No method meets every configured criterion: keep the highest-Macro-F1 model only for diagnosis.
+        # It is not validation-eligible and cannot be accepted as a challenger.
         eligible = [max(val_metrics, key=lambda name: val_metrics[name]["macro_f1"])]
-        selection_rule = "no candidate met threshold; best validation candidate selected for diagnosis"
 
-    # Runtime proxy is used even when free compute has a 0 EUR price.
-    def runtime_proxy(name: str) -> float:
-        c = candidates[name]
-        return c.fit_seconds + config.expected_queries * c.latency_seconds_per_example
-
-    selected_name = min(eligible, key=runtime_proxy)
+    selected_name, selector_report = _choose_candidate_by_objective(
+        eligible,
+        fit_seconds_by_strategy={name: candidate.fit_seconds for name, candidate in candidates.items()},
+        inference_seconds_per_query_by_strategy={
+            name: candidate.latency_seconds_per_example for name, candidate in candidates.items()
+        },
+        config=config,
+        preprocessing_seconds=preprocessing_seconds,
+        diagnostic_only=not bool(validation_eligible_candidates),
+    )
+    if config.selection_objective == "tco":
+        selection_rule = "minimum estimated monetary TCO among validation-eligible candidates; runtime proxy breaks exact TCO ties"
+    else:
+        selection_rule = "minimum runtime proxy among validation-eligible candidates"
+    if not validation_eligible_candidates:
+        selection_rule = (
+            "no candidate met aggregate/task-specific validation requirements; selected best-Macro-F1 candidate for diagnosis only"
+        )
     selected = candidates[selected_name]
     baseline = candidates["tfidf"]
 
@@ -337,6 +483,20 @@ def run_training(
     # Phase C2 cut-over: Proof Gate owns the decision; legacy is audit-only.
     gate_baseline_pred = predict_candidate(baseline, "tfidf", bundle.gate_texts)
     gate_selected_pred = predict_candidate(selected, selected_name, bundle.gate_texts)
+    baseline_gate_task_requirements = evaluate_task_requirements(
+        bundle.gate_labels,
+        gate_baseline_pred,
+        min_recall_by_label=config.min_recall_by_label,
+        min_precision_by_label=config.min_precision_by_label,
+    )
+    selected_gate_task_requirements = evaluate_task_requirements(
+        bundle.gate_labels,
+        gate_selected_pred,
+        min_recall_by_label=config.min_recall_by_label,
+        min_precision_by_label=config.min_precision_by_label,
+    )
+    selected_validation_task_requirements = validation_task_requirements[selected_name]
+    selected_validation_eligible = selected_name in validation_eligible_candidates
     gate_split_sha256 = (
         bundle.report.get("splits", {}).get("acceptance_gate", {}).get("sha256")
     )
@@ -450,8 +610,13 @@ def run_training(
     # compatibility/audit calculation. The legacy comparison can only veto ACCEPT
     # on a detected mismatch; it can never promote REJECT or INCONCLUSIVE.
     # The untouched test split is evaluated only after final_name has been fixed.
-    candidate_accepted = _proofgate_may_accept_candidate(
-        selected_name, selected_proofgate.verdict, proofgate_parity_status
+    candidate_accepted = (
+        _proofgate_may_accept_candidate(
+            selected_name, selected_proofgate.verdict, proofgate_parity_status
+        )
+        and selected_validation_eligible
+        and selected_validation_task_requirements.get("passed") is not False
+        and selected_gate_task_requirements.get("passed") is not False
     )
     if candidate_accepted:
         final_name = selected_name
@@ -460,6 +625,19 @@ def run_training(
         final_name = "tfidf"
         final_gate = baseline_gate
     final_candidate = candidates[final_name]
+    final_task_requirements = (
+        baseline_gate_task_requirements if final_name == "tfidf"
+        else selected_gate_task_requirements
+    )
+    final_validation_task_requirements = validation_task_requirements[final_name]
+    task_requirements_configured = bool(config.min_recall_by_label or config.min_precision_by_label)
+    if task_requirements_configured:
+        business_requirements_passed = (
+            final_validation_task_requirements.get("passed") is True
+            and final_task_requirements.get("passed") is True
+        )
+    else:
+        business_requirements_passed = None
 
     final_gate_macro_f1 = final_gate.get("candidate_macro_f1")
     absolute_target_passed = (
@@ -482,6 +660,13 @@ def run_training(
         final_status = "acceptance_gate_inconclusive"
     elif proofgate_parity_status == "mismatch":
         final_status = "proofgate_legacy_parity_mismatch"
+    elif business_requirements_passed is False:
+        final_status = "task_requirements_not_met"
+    elif selected_name != final_name and (
+        selected_validation_task_requirements.get("passed") is False
+        or selected_gate_task_requirements.get("passed") is False
+    ):
+        final_status = "baseline_kept_candidate_task_requirements_failed"
     elif absolute_target_passed is False:
         final_status = "target_not_met"
     elif selected_name != final_name:
@@ -588,6 +773,24 @@ def run_training(
     _write_json(final_artifact_dir / "proofgate" / "selected_candidate.json", selected_proofgate_payload)
     _write_json(final_artifact_dir / "proofgate" / "baseline_reference.json", baseline_proofgate_payload)
     warnings: list[str] = []
+    if selector_report.get("warning"):
+        warnings.append(str(selector_report["warning"]))
+    if not (config.min_recall_by_label or config.min_precision_by_label):
+        warnings.append(
+            "No task-specific per-label requirements were configured; the statistical Proof Gate does not establish that every business-critical class meets its own threshold."
+        )
+    if selected_validation_task_requirements.get("passed") is False:
+        warnings.append(
+            "The pre-gate selected candidate failed configured task-specific requirements on validation; it was not eligible for acceptance."
+        )
+    if selected_gate_task_requirements.get("passed") is False:
+        warnings.append(
+            "The pre-gate selected candidate failed configured task-specific requirements on the acceptance-gate sample; aggregate Proof Gate acceptance cannot override this failure."
+        )
+    if business_requirements_passed is False:
+        warnings.append(
+            "The final model failed configured task-specific requirements on validation and/or the acceptance-gate sample; no candidate is demonstrated to meet all configured task requirements."
+        )
     selected_gate_scope = (
         "baseline_self_comparison" if selected_name == "tfidf"
         else "selected_candidate_vs_baseline"
@@ -631,11 +834,20 @@ def run_training(
         warnings.append(
             "Near-duplicate audit was skipped because the dataset exceeded its configured row limit; group-disjoint splitting does not prove that cross-group near-duplicates are absent."
         )
+    strategy_cost_values = [
+        value
+        for mapping in (
+            config.strategy_usage_cost_eur_per_query or {},
+            config.strategy_fixed_cost_eur or {},
+        )
+        for value in mapping.values()
+    ]
     tco_inputs_assume_zero = (
         config.compute_eur_per_hour == 0
         and config.fixed_data_cost_eur == 0
         and config.maintenance_cost_eur == 0
         and (config.human_hours == 0 or config.human_eur_per_hour == 0)
+        and not any(value > 0 for value in strategy_cost_values)
     )
     if tco_inputs_assume_zero:
         warnings.append(
@@ -692,9 +904,28 @@ def run_training(
         "replay_descriptor_path": "replay.json",
         "replay_descriptor": replay_descriptor,
         "validation_metrics_all_candidates": val_metrics,
+        "task_requirements": {
+            "configured": bool(config.min_recall_by_label or config.min_precision_by_label),
+            "criteria": {
+                "min_recall_by_label": config.min_recall_by_label or {},
+                "min_precision_by_label": config.min_precision_by_label or {},
+            },
+            "validation_by_candidate": validation_task_requirements,
+            "selected_candidate_validation_passed": selected_validation_task_requirements.get("passed"),
+            "selected_candidate_validation_eligible": selected_validation_eligible,
+            "selected_candidate_acceptance_gate": selected_gate_task_requirements,
+            "baseline_acceptance_gate": baseline_gate_task_requirements,
+            "final_model_validation": final_validation_task_requirements,
+            "final_model_acceptance_gate": final_task_requirements,
+            "business_requirements_passed": business_requirements_passed,
+            "interpretation": "Per-label requirements are separate from the statistical Proof Gate and apply only to the supplied validation/gate samples; they do not guarantee future-distribution performance.",
+        },
+        "business_requirements_passed": business_requirements_passed,
         "candidate_errors": candidate_errors,
         "selected_before_acceptance_gate": selected_name,
         "selection_rule": selection_rule,
+        "selection_objective": config.selection_objective,
+        "selector": selector_report,
         "validation_eligible_candidates": validation_eligible_candidates,
         "acceptance_gate_comparison": {
             "selected_candidate_scope": selected_gate_scope,
@@ -726,6 +957,7 @@ def run_training(
             fit_seconds=final_candidate.fit_seconds,
             inference_seconds_per_query=final_candidate.latency_seconds_per_example,
             config=config,
+            strategy_name=final_name,
         ),
         "limitations": [
             "The paired bootstrap interval estimates uncertainty on the independent acceptance-gate sample conditional on fitted models; it does not capture retraining variance.",
@@ -818,11 +1050,13 @@ def run_training(
         fit_seconds=preprocessing_seconds + final_candidate.fit_seconds,
         inference_seconds_per_query=final_candidate.latency_seconds_per_example,
         config=config,
+        strategy_name=final_name,
     )
     manifest["full_selection_run_tco"] = estimate_tco_eur(
         fit_seconds=elapsed_total_seconds,
         inference_seconds_per_query=final_candidate.latency_seconds_per_example,
         config=config,
+        strategy_name=final_name,
     )
     manifest["estimated_tco"] = manifest["full_selection_run_tco"]
     _write_json(root / "report.json", manifest)
@@ -858,6 +1092,7 @@ def run_training(
                 fit_seconds=preprocessing_seconds + cand.fit_seconds,
                 inference_seconds_per_query=cand.latency_seconds_per_example,
                 config=config,
+                strategy_name=name,
             )),
             "artifact_path": str(root / "candidates" / name),
             "error": None,
@@ -871,6 +1106,10 @@ def run_training(
         "selected_strategy": final_name,
         "selected_before_acceptance_gate": selected_name,
         "validation_metrics": val_metrics,
+        "selection_objective": config.selection_objective,
+        "selector": selector_report,
+        "task_requirements": manifest["task_requirements"],
+        "business_requirements_passed": business_requirements_passed,
         "baseline_test_metrics": baseline_test_metrics,
         "selected_candidate_test_metrics": selected_test_metrics,
         "acceptance_gate": selected_gate,
