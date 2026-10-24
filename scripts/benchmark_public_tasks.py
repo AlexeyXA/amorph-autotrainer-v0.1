@@ -13,6 +13,7 @@ import hashlib
 import json
 import platform
 import time
+import unicodedata
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -205,6 +206,31 @@ def main() -> int:
     if len(train_labels) < 2:
         raise RuntimeError("At least two train labels are required")
 
+    def normalise_text(value: str) -> str:
+        return " ".join(unicodedata.normalize("NFKC", value).strip().casefold().split())
+
+    train_label_map: dict[str, set[str]] = {}
+    for row in train_rows:
+        train_label_map.setdefault(normalise_text(row["text"]), set()).add(row["label"])
+    train_text_keys = set(train_label_map)
+    test_text_keys = [normalise_text(row["text"]) for row in test_rows]
+    overlap_mask = np.asarray([key in train_text_keys for key in test_text_keys], dtype=bool)
+    # Hash only the normalized keys, never store or publish raw utterances in the report.
+    overlap_keys = sorted(set(test_text_keys) & train_text_keys)
+    label_conflict_rows = sum(
+        1 for row, key in zip(test_rows, test_text_keys)
+        if key in train_label_map and row["label"] not in train_label_map[key]
+    )
+    source_overlap_audit = {
+        "normalization": "Unicode NFKC, strip, casefold, collapse whitespace",
+        "official_test_rows_with_exact_normalized_text_in_official_train": int(overlap_mask.sum()),
+        "official_test_overlap_fraction": float(overlap_mask.mean()) if len(overlap_mask) else 0.0,
+        "unique_overlapping_normalized_text_keys": len(overlap_keys),
+        "overlapping_text_key_set_sha256": hashlib.sha256("\n".join(overlap_keys).encode("utf-8")).hexdigest(),
+        "overlap_test_rows_with_label_not_seen_for_same_text_in_train": int(label_conflict_rows),
+        "policy": "keep official test unchanged; report full-test metrics plus a non-overlap diagnostic",
+    }
+
     train_csv, test_csv = data / "official_train.csv", data / "official_test.csv"
     write_csv(train_csv, train_rows)
     write_csv(test_csv, test_rows)
@@ -214,6 +240,7 @@ def main() -> int:
         "train_classes": len(train_labels),
         "official_test_classes": len(test_labels),
         "official_test_labels_without_training_support": sorted(test_labels - train_labels),
+        "source_train_test_exact_text_overlap_audit": source_overlap_audit,
         "prepared_train_csv_sha256": sha256_file(train_csv),
         "prepared_official_test_csv_sha256": sha256_file(test_csv),
         "prepared_csv_files_are_public_dataset_derivatives": True,
@@ -260,11 +287,11 @@ def main() -> int:
 
     train_label_counts = {label: sum(1 for row in train_rows if row["label"] == label) for label in train_labels}
     all_report_labels = sorted(train_labels | test_labels)
+    test_label_universe = sorted(test_labels)
 
-    def score(predictions):
-        y_pred = np.asarray(predictions, dtype=object)
+    def score_arrays(y_true_local, y_pred_local, scope):
         precision, per_class_recall, per_class_f1, support = precision_recall_fscore_support(
-            y_true, y_pred, labels=all_report_labels, average=None, zero_division=0
+            y_true_local, y_pred_local, labels=all_report_labels, average=None, zero_division=0
         )
         per_class_metrics = []
         for i, label in enumerate(all_report_labels):
@@ -272,33 +299,54 @@ def main() -> int:
                 "label": label,
                 "training_support": int(train_label_counts.get(label, 0)),
                 "official_test_support": int(support[i]),
-                "predicted_support": int(np.count_nonzero(y_pred == label)),
+                "predicted_support": int(np.count_nonzero(y_pred_local == label)),
                 "precision": float(precision[i]),
                 "recall": float(per_class_recall[i]),
                 "f1": float(per_class_f1[i]),
             })
         oos_metrics = next((item for item in per_class_metrics if item["label"] == "oos"), None)
         return {
-            "accuracy": float(accuracy_score(y_true, y_pred)),
+            "accuracy": float(accuracy_score(y_true_local, y_pred_local)),
             "macro_f1_fixed_training_label_universe": float(f1_score(
-                y_true, y_pred, labels=fixed_labels, average="macro", zero_division=0
+                y_true_local, y_pred_local, labels=fixed_labels, average="macro", zero_division=0
             )),
             "balanced_accuracy_fixed_training_label_universe": float(recall_score(
-                y_true, y_pred, labels=fixed_labels, average="macro", zero_division=0
+                y_true_local, y_pred_local, labels=fixed_labels, average="macro", zero_division=0
             )),
             "macro_f1_official_test_label_universe": float(f1_score(
-                y_true, y_pred, labels=sorted(test_labels), average="macro", zero_division=0
+                y_true_local, y_pred_local, labels=test_label_universe, average="macro", zero_division=0
             )),
             "balanced_accuracy_official_test_label_universe": float(recall_score(
-                y_true, y_pred, labels=sorted(test_labels), average="macro", zero_division=0
+                y_true_local, y_pred_local, labels=test_label_universe, average="macro", zero_division=0
             )),
-            "official_test_rows": len(y_true),
+            "official_test_rows": len(y_true_local),
             "training_label_count": len(fixed_labels),
             "official_test_labels_absent_from_training": sorted(test_labels - train_labels),
+            "official_test_labels_without_support_in_this_subset": sorted(set(test_label_universe) - set(y_true_local.tolist())),
             "per_class_metrics": per_class_metrics,
             "oos_metrics": oos_metrics,
-            "scope": "report_only_after_selection_and_gate",
+            "scope": scope,
         }
+
+    def score(predictions):
+        y_pred = np.asarray(predictions, dtype=object)
+        full_test = score_arrays(y_true, y_pred, "all official test rows; report-only")
+        keep = ~overlap_mask
+        if bool(keep.any()):
+            clean_diagnostic = score_arrays(
+                y_true[keep],
+                y_pred[keep],
+                "diagnostic rows whose normalized input text does not occur in official training split",
+            )
+        else:
+            clean_diagnostic = {
+                "status": "unavailable",
+                "reason": "Every official test input overlaps normalized official training text",
+                "official_test_rows": 0,
+            }
+        full_test["non_overlapping_input_diagnostic"] = clean_diagnostic
+        full_test["source_train_test_exact_text_overlap_rows"] = int(overlap_mask.sum())
+        return full_test
 
     tfidf_path = run_dir / "candidates" / "tfidf" / "model.joblib"
     metrics["tfidf"] = score(joblib.load(tfidf_path).predict(x_test))
