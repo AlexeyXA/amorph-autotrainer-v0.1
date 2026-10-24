@@ -39,5 +39,6 @@ jobs:
             benchmark_runs/promptfoo-model-report/llm_tco_workload_profile_promptfoo.csv
             benchmark_runs/promptfoo-model-report/llm_tco_rate_card_2026-10-24.csv
             benchmark_runs/promptfoo-model-report/llm_tco_scenarios_promptfoo.csv
+            benchmark_runs/promptfoo-model-report/llm_tco_common_profile_scenarios_promptfoo.csv
           if-no-files-found: error
           retention-days: 30
