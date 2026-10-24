@@ -34,6 +34,7 @@ jobs:
           name: amorph-promptfoo-four-model-datasets-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             benchmark_runs/promptfoo-model-report/model_response_source_attribution.csv
+            benchmark_runs/promptfoo-model-report/model_response_source_attribution_conflict_free.csv
             benchmark_runs/promptfoo-model-report/political_question_topic.csv
             benchmark_runs/promptfoo-model-report/dataset_provenance.json
             benchmark_runs/promptfoo-model-report/llm_tco_workload_profile_promptfoo.csv
