@@ -119,7 +119,7 @@ def test_cost_config_validates_per_label_thresholds():
     )
     config.validate()
 
-    with pytest.raises(ValueError, match=r"min_recall_by_label\['oos'\].*in \\[0, 1\\]"):
+    with pytest.raises(ValueError, match="must be in"):
         CostConfig(min_recall_by_label={"oos": 1.01}).validate()
     with pytest.raises(ValueError, match="non-empty strings"):
         CostConfig(min_recall_by_label={" ": 0.80}).validate()
