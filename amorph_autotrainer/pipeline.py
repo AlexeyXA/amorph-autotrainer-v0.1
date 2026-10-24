@@ -500,7 +500,15 @@ def run_training(
         baseline_gate_task_requirements if final_name == "tfidf"
         else selected_gate_task_requirements
     )
-    business_requirements_passed = final_task_requirements.get("passed")
+    final_validation_task_requirements = validation_task_requirements[final_name]
+    task_requirements_configured = bool(config.min_recall_by_label or config.min_precision_by_label)
+    if task_requirements_configured:
+        business_requirements_passed = (
+            final_validation_task_requirements.get("passed") is True
+            and final_task_requirements.get("passed") is True
+        )
+    else:
+        business_requirements_passed = None
 
     final_gate_macro_f1 = final_gate.get("candidate_macro_f1")
     absolute_target_passed = (
@@ -650,7 +658,7 @@ def run_training(
         )
     if business_requirements_passed is False:
         warnings.append(
-            "The final fallback model also failed configured task-specific requirements; no candidate is demonstrated to meet all configured task requirements."
+            "The final model failed configured task-specific requirements on validation and/or the acceptance-gate sample; no candidate is demonstrated to meet all configured task requirements."
         )
     selected_gate_scope = (
         "baseline_self_comparison" if selected_name == "tfidf"
@@ -767,6 +775,8 @@ def run_training(
             "selected_candidate_validation_eligible": selected_validation_eligible,
             "selected_candidate_acceptance_gate": selected_gate_task_requirements,
             "baseline_acceptance_gate": baseline_gate_task_requirements,
+            "final_model_validation": final_validation_task_requirements,
+            "final_model_acceptance_gate": final_task_requirements,
             "business_requirements_passed": business_requirements_passed,
             "interpretation": "Per-label requirements are separate from the statistical Proof Gate and apply only to the supplied validation/gate samples; they do not guarantee future-distribution performance.",
         },
