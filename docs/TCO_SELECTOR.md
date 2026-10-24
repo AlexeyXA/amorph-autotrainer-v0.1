@@ -66,6 +66,7 @@ When `compute_eur_per_hour=0`, TCO mode requires explicit `--strategy-usage-cost
 - `selector.minimum_estimated_tco_eur`: minimum estimated monetary TCO among those candidates.
 - `selector.tco_tied_candidates` / `selector.tie_breaker`: show ties; runtime only breaks a tie.
 - `selector.candidate_tco_values_differ`: whether estimated TCO actually differs across the eligible set.
+- `selector.selection_status`, `selector.diagnostic_only`, `selector.eligible_candidates`, and `selector.candidates_considered`: distinguish a genuine selection among validation-eligible candidates from a diagnostic ranking. If no candidate meets validation criteria, the best-Macro-F1 candidate may be cost-ranked for diagnosis, but `eligible_candidates=[]` and the report explicitly says the ranking is diagnostic only.
 - `estimated_tco`, `selected_model_tco`, `full_selection_run_tco`: operational estimate fields at different scopes.
 - `tco_assumption_status` and warnings: disclose zero or missing cost assumptions.
 
