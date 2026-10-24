@@ -11,6 +11,8 @@ import argparse
 import csv
 import hashlib
 import json
+import math
+import statistics
 import urllib.request
 from collections import Counter
 from datetime import datetime, timezone
@@ -95,6 +97,72 @@ def write_three_column_csv(path: Path, rows: list[dict[str, str]]) -> None:
         writer.writerows(rows)
 
 
+def write_dict_csv(path: Path, fields: list[str], rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields, extrasaction="raise", lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def approximate_token_count(text: str) -> int:
+    """Planning proxy only: rough English estimate, not any provider's billed tokenizer."""
+    return math.ceil(len(text) / 4)
+
+
+MODEL_RATE_ROWS = [
+    {
+        "provider": "OpenAI", "model_id": "gpt-6-luna", "display_model": "GPT-6 Luna",
+        "input_usd_per_million": 0.10, "cached_input_usd_per_million": 0.01, "output_usd_per_million": 0.50,
+        "mode": "standard_short_context", "price_window": "verified 2026-10-24; no explicit end date",
+        "reference_profile_model": "gpt-4.1", "source_url": "https://developers.openai.com/api/docs/pricing",
+        "source_note": "Current official Standard pricing; short-context rates. Cached input not applied in scenario cost."
+    },
+    {
+        "provider": "OpenAI", "model_id": "gpt-6.1-sol", "display_model": "GPT-6.1 Sol",
+        "input_usd_per_million": 2.00, "cached_input_usd_per_million": 0.10, "output_usd_per_million": 10.00,
+        "mode": "standard_short_context", "price_window": "verified 2026-10-24; no explicit end date",
+        "reference_profile_model": "gpt-4.1", "source_url": "https://developers.openai.com/api/docs/pricing",
+        "source_note": "Current official Standard pricing; short-context rates. Cached input not applied in scenario cost."
+    },
+    {
+        "provider": "OpenAI", "model_id": "gpt-6-astra", "display_model": "GPT-6 Astra",
+        "input_usd_per_million": 10.00, "cached_input_usd_per_million": 1.00, "output_usd_per_million": 50.00,
+        "mode": "standard_short_context", "price_window": "verified 2026-10-24; no explicit end date",
+        "reference_profile_model": "gpt-4.1", "source_url": "https://developers.openai.com/api/docs/pricing",
+        "source_note": "Current official Standard pricing; short-context rates. Cached input not applied in scenario cost."
+    },
+    {
+        "provider": "Anthropic", "model_id": "claude-opus-5-5", "display_model": "Claude Opus 5.5",
+        "input_usd_per_million": 4.00, "cached_input_usd_per_million": 0.20, "output_usd_per_million": 20.00,
+        "mode": "standard", "price_window": "model page released 2026-09-22; verified 2026-10-24",
+        "reference_profile_model": "claude-opus-4", "source_url": "https://platform.claude.com/docs/en/models/opus-5-5/overview",
+        "source_note": "Official $4/$20 input/output; cache read $0.20; Batch API advertises 50% off input/output. Cache not applied."
+    },
+    {
+        "provider": "xAI", "model_id": "grok-4.5", "display_model": "Grok 4.5",
+        "input_usd_per_million": 2.00, "cached_input_usd_per_million": 0.30, "output_usd_per_million": 6.00,
+        "mode": "standard_short_context", "price_window": "verified 2026-10-24; no explicit end date",
+        "reference_profile_model": "grok-4", "source_url": "https://docs.x.ai/developers/pricing",
+        "source_note": "Current official short-context input/cached/output $2/$0.30/$6; long-context rates apply from prompt >=200k tokens."
+    },
+    {
+        "provider": "Google", "model_id": "gemini-3.8-flash", "display_model": "Gemini 3.8 Flash",
+        "input_usd_per_million": 0.75, "cached_input_usd_per_million": 0.075, "output_usd_per_million": 3.75,
+        "mode": "standard_intro", "price_window": "through 2026-12-31",
+        "reference_profile_model": "gemini-2.5-pro", "source_url": "https://ai.google.dev/gemini-api/docs/pricing?hl=en",
+        "source_note": "Intro standard price through 2026-12-31; standard input/output double on 2027-01-01. Cache storage billed separately."
+    },
+    {
+        "provider": "Google", "model_id": "gemini-3.8-flash", "display_model": "Gemini 3.8 Flash",
+        "input_usd_per_million": 1.50, "cached_input_usd_per_million": 0.15, "output_usd_per_million": 7.50,
+        "mode": "standard_from_2027", "price_window": "from 2027-01-01",
+        "reference_profile_model": "gemini-2.5-pro", "source_url": "https://ai.google.dev/gemini-api/docs/pricing?hl=en",
+        "source_note": "Published standard price starting 2027-01-01; cache storage billed separately."
+    },
+]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", default="prepared_promptfoo")
@@ -142,6 +210,90 @@ def main() -> int:
     write_three_column_csv(response_path, response_rows)
     write_three_column_csv(topic_path, topic_rows)
 
+    # Joined workload profile: actual Promptfoo question text + stored historical response.
+    topic_by_group = {row["group_id"]: row for row in topic_rows}
+    workload_rows: list[dict[str, Any]] = []
+    profile_tokens: dict[str, dict[str, list[int]]] = {}
+    for answer_row in response_rows:
+        qid = answer_row["group_id"]
+        question = topic_by_group[qid]["text"]
+        historical_model = answer_row["label"]
+        # Add 100 input tokens as a visible assumption for task/system instructions.
+        input_tokens_est = approximate_token_count(question) + 100
+        output_tokens_est = approximate_token_count(answer_row["text"])
+        workload_rows.append({
+            "text": answer_row["text"],
+            "label": historical_model,
+            "group_id": qid,
+            "query_text": question,
+            "query_axis": topic_by_group[qid]["label"],
+            "input_chars": len(question),
+            "response_chars": len(answer_row["text"]),
+            "input_tokens_est": input_tokens_est,
+            "output_tokens_est": output_tokens_est,
+            "token_estimation_method": "ceil(characters/4) + 100 assumed instruction tokens; approximate, not billed usage",
+            "historical_response_model": historical_model,
+        })
+        profile_tokens.setdefault(historical_model, {"input": [], "output": []})
+        profile_tokens[historical_model]["input"].append(input_tokens_est)
+        profile_tokens[historical_model]["output"].append(output_tokens_est)
+
+    workload_path = out / "llm_tco_workload_profile_promptfoo.csv"
+    workload_fields = [
+        "text", "label", "group_id", "query_text", "query_axis", "input_chars", "response_chars",
+        "input_tokens_est", "output_tokens_est", "token_estimation_method", "historical_response_model",
+    ]
+    write_dict_csv(workload_path, workload_fields, workload_rows)
+
+    rate_card_path = out / "llm_tco_rate_card_2026-10-24.csv"
+    rate_fields = list(MODEL_RATE_ROWS[0].keys())
+    write_dict_csv(rate_card_path, rate_fields, MODEL_RATE_ROWS)
+
+    tco_rows: list[dict[str, Any]] = []
+    volume_scenarios = [2500, 10000, 100000, 1000000]
+    historical_label_by_provider = {
+        "OpenAI": "gpt-4.1",
+        "Anthropic": "claude-opus-4",
+        "xAI": "grok-4",
+        "Google": "gemini-2.5-pro",
+    }
+    for rate in MODEL_RATE_ROWS:
+        historical_label = historical_label_by_provider[rate["provider"]]
+        token_profile = profile_tokens[historical_label]
+        avg_input = statistics.mean(token_profile["input"])
+        avg_output = statistics.mean(token_profile["output"])
+        for nq in volume_scenarios:
+            total_input = round(avg_input * nq)
+            total_output = round(avg_output * nq)
+            cost_usd = (
+                total_input * float(rate["input_usd_per_million"])
+                + total_output * float(rate["output_usd_per_million"])
+            ) / 1_000_000
+            tco_rows.append({
+                "provider": rate["provider"],
+                "model_id": rate["model_id"],
+                "display_model": rate["display_model"],
+                "pricing_mode": rate["mode"],
+                "Nq": nq,
+                "reference_dataset_queries": len(source_rows),
+                "Nq_is_actual_owner_volume": False,
+                "historical_response_profile": historical_label,
+                "avg_input_tokens_est": round(avg_input, 2),
+                "avg_output_tokens_est": round(avg_output, 2),
+                "total_input_tokens_est": total_input,
+                "total_output_tokens_est": total_output,
+                "input_usd_per_million": rate["input_usd_per_million"],
+                "output_usd_per_million": rate["output_usd_per_million"],
+                "estimated_token_api_cost_usd": round(cost_usd, 6),
+                "estimated_token_api_cost_usd_per_query": round(cost_usd / nq, 8),
+                "estimate_method": "historical Promptfoo text-length profile; ceil(chars/4)+100 assumed instruction tokens; applies current rate to historical output length",
+                "excluded_costs": "tools, retries, caching, cache storage/write, current-model reasoning tokens/output-length changes, human review, hosting, taxes, success/error costs",
+                "price_source_url": rate["source_url"],
+            })
+    tco_path = out / "llm_tco_scenarios_promptfoo.csv"
+    tco_fields = list(tco_rows[0].keys())
+    write_dict_csv(tco_path, tco_fields, tco_rows)
+
     manifest: dict[str, Any] = {
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "dataset": "Promptfoo Political Questions / Political Bias Answers",
@@ -170,6 +322,24 @@ def main() -> int:
                 "columns": ["text", "label", "group_id"],
                 "task": "classify a political question by its provided topic axis",
             },
+            workload_path.name: {
+                "rows": len(workload_rows),
+                "sha256": sha256_file(workload_path),
+                "columns": workload_fields,
+                "task": "join each historical response to its public benchmark prompt and estimate a token-length workload profile",
+            },
+            rate_card_path.name: {
+                "rows": len(MODEL_RATE_ROWS),
+                "sha256": sha256_file(rate_card_path),
+                "columns": rate_fields,
+                "task": "official current list price snapshot checked 2026-10-24",
+            },
+            tco_path.name: {
+                "rows": len(tco_rows),
+                "sha256": sha256_file(tco_path),
+                "columns": tco_fields,
+                "task": "API token-cost scenarios at Nq=2500/10000/100000/1000000; scenarios are not actual owner traffic",
+            },
         },
         "grouping_policy": (
             "group_id is question_id. All four model responses to the same question share one "
@@ -197,6 +367,8 @@ def main() -> int:
         "labels": dict(sorted(label_counts.items())),
         "group_ids": len(group_counts),
         "outputs": manifest["outputs"],
+        "tco_scenario_rows": len(tco_rows),
+        "token_estimation": "ceil(chars/4) + 100 assumed instruction tokens; not provider billed usage",
         "provenance": str(manifest_path),
     }, indent=2, ensure_ascii=False))
     return 0
