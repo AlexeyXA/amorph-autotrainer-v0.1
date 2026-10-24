@@ -1,13 +1,13 @@
 # AMORPH AutoTrainer — public real-task verification
 
 **Date:** 2026-10-24  
-**Successful workflow:** [GitHub Actions #40080257083](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/40080257083)  
-**Code revision used for the completed benchmark run:** `0672f785fc7c9eccf76a1b953510ea73518fd737`  
-**Dataset/model outputs:** artifacts linked from the workflow run above; no raw CSVs were uploaded.
+**Latest successful workflow with exact-text overlap diagnostics:** [GitHub Actions #40080734847](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/40080734847)  
+**Code revision used:** `8206499af4b4a76a28145559bd6aff2b71f72778`  
+**Artifacts (report/provenance/manifests + candidate models; no raw CSVs uploaded):** BANKING77 [artifact 12554967252](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/40080734847/artifacts/12554967252), CLINC150 [artifact 12554893973](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/40080734847/artifacts/12554893973), MASSIVE ru-RU [artifact 12555495686](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/40080734847/artifacts/12555495686). No raw CSVs were uploaded.
 
 ## Scope and result in one paragraph
 
-Three public labelled classification tasks were run through AMORPH's current TF-IDF / E5 pipeline on CPU using fixed seeds and pinned sources. BANKING77 and MASSIVE ru-RU selected TF-IDF; their Proof Gate is honestly `INCONCLUSIVE / SELF_COMPARISON`, because there was no validation-eligible challenger. CLINC150 selected E5 and passed the configured Proof Gate with `ACCEPT` and legacy parity `match`. These are public benchmark results, **not owner-domain proof or proof of economic savings**. Cost rates in this run were zero/assumed-free and the selector still uses runtime proxy, not monetary TCO.
+Three public labelled classification tasks were run through AMORPH's current TF-IDF / E5 pipeline on CPU using fixed seeds and pinned sources. The latest successful workflow is #40080734847 on source SHA `8206499af4b4a76a28145559bd6aff2b71f72778`. BANKING77 and MASSIVE ru-RU selected TF-IDF; their Proof Gate is `INCONCLUSIVE / SELF_COMPARISON`, because there was no validation-eligible challenger. CLINC150 selected E5 and passed the configured Proof Gate with `ACCEPT` and legacy parity `match`, **but its official-test out-of-scope (OOS) recall is only 3.9%**. This is a material counterexample to treating the aggregate ACCEPT as sufficient for every requirement. These are public benchmark results, **not owner-domain proof or proof of economic savings**. Cost rates were zero/assumed-free and the selector still uses runtime proxy, not monetary TCO.
 
 ## Results
 
@@ -17,7 +17,7 @@ Validation numbers are the AMORPH internal validation splits created only from e
 |---|---:|---:|---|---|---|---|
 | BANKING77 | 10,003 / 3,080; 77 classes | 0.8630 / 0.7809 | TF-IDF | INCONCLUSIVE / SELF_COMPARISON | Acc 0.8620; Macro-F1 0.8607 | Acc 0.7903; Macro-F1 0.7660 |
 | CLINC150 + OOS class | 15,100 / 5,500; 151 classes | 0.9072 / 0.9307 | E5 | **ACCEPT**, parity match | Acc 0.7456; Macro-F1 0.8142 | Acc 0.7542; Macro-F1 0.8244 |
-| MASSIVE ru-RU | 11,387 prepared train / 2,974 test; 56 train labels, 59 test labels | 0.4517 / 0.2739 | TF-IDF | INCONCLUSIVE / SELF_COMPARISON | Acc 0.6214; fixed-train-label Macro-F1 0.4716 | Acc 0.5313; fixed-train-label Macro-F1 0.3000 |
+| MASSIVE ru-RU | 11,387 prepared train / 2,974 test; 56 train labels, 59 test labels | 0.4517 / 0.2739 | TF-IDF | INCONCLUSIVE / SELF_COMPARISON | Acc 0.6214; fixed-train-label Macro-F1 0.4716 | Acc 0.5319; fixed-train-label Macro-F1 0.3004 |
 
 ### CLINC150 gate details
 
@@ -25,9 +25,15 @@ The gate compared E5 with TF-IDF on 3,775 internal gate rows (25 examples per ea
 
 Interpretation is intentionally narrow: there was no absolute `min_macro_f1` target in this run; acceptance means the predeclared relative gate conditions passed on that gate sample, not that the model is fit for any business use. The official test contains 1,000 `oos` examples, while official training contains 100. `oos` is treated as a known 151st class here, so this benchmark does not prove open-world OOD detection.
 
+**Critical OOS result on the official test:** training has 100 OOS rows, but official test has 1,000. TF-IDF predicted 112 examples as OOS (precision 0.9107, recall **0.1020**, F1 0.1835); E5 predicted only 39 (precision 1.0000, recall **0.0390**, F1 0.0751). Thus E5's aggregate Gate ACCEPT does **not** show acceptable OOS detection. The internal gate sampled 25 rows per class and did not represent the official test's 1,000-OOS prevalence. A task that needs open-world detection must have a separate predeclared OOS recall/precision/coverage gate and a suitable evaluation protocol; the current one-score Macro-F1 Gate is insufficient.
+
+**Exact train/test text overlap audit:** after Unicode NFKC + trim + casefold + whitespace collapse, 2 of 5,500 official-test rows overlap an input in official train (0.0364%; 2 unique normalized strings). Both test rows have a label not observed for that same normalized input in train. The test set remains unchanged. On the 5,498 rows without normalized exact overlap, E5 accuracy/Macro-F1 are 0.7543/0.8246 and TF-IDF 0.7457/0.8142. This is a small count, but the label conflict merits attention and is explicitly recorded via the SHA-256 of overlap keys rather than publishing text.
+
 ### BANKING77 interpretation
 
 The source files were downloaded from the pinned PolyAI-LDN repository revision and verified by SHA-256. E5 was worse than TF-IDF on validation and on official test. Since the chosen candidate is the TF-IDF baseline, Gate correctly returns `INCONCLUSIVE / SELF_COMPARISON`; no challenger acceptance is claimed.
+
+**Exact train/test text overlap audit:** 7/3,080 official-test rows (0.2273%) have a normalized exact input match in official train; all 7 share the same label as their train match. The test remains unchanged. On 3,073 test rows without these matches, TF-IDF accuracy/Macro-F1 are 0.8617/0.8603 and E5 are 0.7908/0.7662, so the overall conclusion does not change. SHA-256 of the set of normalized overlap keys: `e911a21c1879ca61390b055fa6d6850901bf3f9aac9ac2144a31fe7edf8722b2`.
 
 ### MASSIVE ru-RU interpretation
 
@@ -67,7 +73,7 @@ The prepared training set has 11,387 rows after required-field filtering, remova
 
 1. No owner/private production CSV was available; these results demonstrate operation on public benchmarks only.
 2. BANKING77 and CLINC150 contain no reliable user/customer/session group ID; internal splits are row-wise and cannot claim group-disjoint generalization.
-3. The completed workflow run above predates the newest supplemental exact train/test overlap audit. The updated runner adds Unicode-normalized overlap counts/hashes and a diagnostic for rows that do not overlap; that newer full matrix run is tracked separately in Actions.
+3. The successful workflow #40080734847 includes Unicode-normalized exact train/test input overlap counts and hashed overlap-key sets for BANKING77 and CLINC150, and reports diagnostics on test rows without those exact overlaps. These are exact-string checks, not semantic near-duplicate detection. The MASSIVE runner has a different data-preparation path and does not yet apply this same official train-vs-test text overlap check.
 4. The current product tests classification strategies (TF-IDF and E5), **not GPT/Grok/Gemini APIs**. No hosted LLM API was called and no API key or paid inference was used.
 5. The Gate currently evaluates one configured classification metric and does not by itself measure business-weighted error costs, safety, hallucinations, regression on old generative capabilities, or future distribution shift.
 6. The Selector still chooses by runtime proxy. With zero monetary rates, any TCO output is an assumed-free scenario, not a claim of zero cost or minimum money spend.
@@ -75,7 +81,7 @@ The prepared training set has 11,387 rows after required-field filtering, remova
 
 ## Next steps
 
-1. Finish the supplemental per-class and train/test overlap run; use the complete official-test metrics and the non-overlap diagnostic together.
+1. Add a dedicated OOS acceptance criterion; CLINC150 demonstrates that aggregate Macro-F1 acceptance can coexist with very low OOS recall.
 2. Preserve this benchmark evidence as reproducibility/regression coverage, not as a substitute for a business-specific task.
 3. Run one authorised owner-domain CSV before claiming production suitability.
 4. Only then implement/validate `selection_objective=tco`, with explicit rates/horizon/query volume and tests showing the lowest-cost candidate passes all quality gates.
