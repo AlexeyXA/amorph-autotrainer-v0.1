@@ -1,0 +1,40 @@
+name: Prepare public four-model report dataset
+
+on:
+  push:
+    branches:
+      - research/real-task-verification-20261024
+    paths:
+      - "scripts/prepare_promptfoo_model_report_dataset.py"
+      - ".github/workflows/prepare-promptfoo-model-report-dataset.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout pinned source revision
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Prepare normalized text/label/group_id CSVs
+        run: |
+          python scripts/prepare_promptfoo_model_report_dataset.py \
+            --output-dir benchmark_runs/promptfoo-model-report \
+            --cache-dir .cache/promptfoo
+      - name: Upload normalized CSVs and provenance (source CSV excluded)
+        uses: actions/upload-artifact@v4
+        with:
+          name: amorph-promptfoo-four-model-datasets-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            benchmark_runs/promptfoo-model-report/model_response_source_attribution.csv
+            benchmark_runs/promptfoo-model-report/political_question_topic.csv
+            benchmark_runs/promptfoo-model-report/dataset_provenance.json
+          if-no-files-found: error
+          retention-days: 30
