@@ -14,6 +14,7 @@
 | 8 | Owner domain CSV run with artifact hashes | **owner action required** — not yet demonstrated on the owner domain |
 | 9 | Multi-seed protocol for promoting experimental E5/hybrid | **open** — not required for the v0.1 protocol freeze; required before stronger generalization claims |
 | 10 | Task-specific critical-class acceptance constraints | **implemented in draft PR #27** — repeatable per-label recall/precision floors; checked on validation and acceptance gate independently of aggregate Proof Gate; test suite green on draft SHA `58dfee9d3642ae7a0144d238e5be56dc24f94efc` |
+| 11 | Opt-in monetary TCO selector | **implemented in draft PR #27; CI recheck in progress** — `selection_objective=tco`; candidate-specific usage/setup costs; zero-compute TCO requires explicit rates; default remains `runtime_proxy`; see [TCO selector contract](TCO_SELECTOR.md) |
 
 ## Draft follow-up — public task verification and per-label constraints (2026-10-24)
 
