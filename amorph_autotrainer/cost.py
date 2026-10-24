@@ -17,6 +17,8 @@ class CostConfig:
     human_eur_per_hour: float = 0.0
     noninferiority_margin: float = 0.01
     min_macro_f1: float | None = None
+    min_recall_by_label: dict[str, float] | None = None
+    min_precision_by_label: dict[str, float] | None = None
     bootstrap_samples: int = 500
     min_gate_examples_per_class: int = 5
     random_seed: int = 42
@@ -34,6 +36,20 @@ class CostConfig:
         }
         if self.min_macro_f1 is not None:
             finite_values["min_macro_f1"] = self.min_macro_f1
+        for mapping_name, mapping in (
+            ("min_recall_by_label", self.min_recall_by_label),
+            ("min_precision_by_label", self.min_precision_by_label),
+        ):
+            if mapping is not None:
+                if not isinstance(mapping, dict):
+                    raise ValueError(f"{mapping_name} must be a mapping of label to threshold")
+                for label, threshold in mapping.items():
+                    if not isinstance(label, str) or not label.strip():
+                        raise ValueError(f"{mapping_name} labels must be non-empty strings")
+                    if not isinstance(threshold, (int, float)) or not math.isfinite(float(threshold)):
+                        raise ValueError(f"{mapping_name}[{label!r}] must be a finite number")
+                    if not 0 <= float(threshold) <= 1:
+                        raise ValueError(f"{mapping_name}[{label!r}] must be in [0, 1]")
         for name, value in finite_values.items():
             if not math.isfinite(float(value)):
                 raise ValueError(f"{name} must be a finite number")
