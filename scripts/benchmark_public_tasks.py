@@ -21,7 +21,7 @@ from typing import Any
 BANKING77_ID = "PolyAI/banking77"
 BANKING77_REVISION = "8eed2b348ec07d40ffbe91dcc4718e2f0f977714"
 BANKING77_URL = "https://huggingface.co/datasets/PolyAI/banking77"
-CLINC150_URL = "https://archive.ics.uci.edu/static/public/570/clinc150.zip"
+CLINC150_URL = "https://cdn.uci-ics-mlr-prod.aws.uci.edu/570/clinc150.zip"
 CLINC150_CARD = "https://archive.ics.uci.edu/dataset/570/clinc150"
 
 
