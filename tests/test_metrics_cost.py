@@ -2,7 +2,11 @@ import numpy as np
 import pytest
 
 from amorph_autotrainer.cost import CostConfig, estimate_tco_eur
-from amorph_autotrainer.metrics import paired_stratified_bootstrap_macro_f1, gate_candidate
+from amorph_autotrainer.metrics import (
+    evaluate_task_requirements,
+    paired_stratified_bootstrap_macro_f1,
+    gate_candidate,
+)
 
 
 def test_identical_predictions_have_zero_bootstrap_delta():
@@ -51,3 +55,71 @@ def test_cost_config_validates_hard_budgets():
 def test_cost_config_rejects_non_finite_values(kwargs):
     with pytest.raises(ValueError, match="finite number"):
         CostConfig(**kwargs).validate()
+
+
+
+def test_task_requirement_fails_when_oos_recall_is_below_threshold_despite_good_other_class():
+    y_true = np.asarray(["oos"] * 1000 + ["intent"] * 100, dtype=object)
+    y_pred = np.asarray(["oos"] * 39 + ["other"] * 961 + ["intent"] * 100, dtype=object)
+
+    result = evaluate_task_requirements(
+        y_true,
+        y_pred,
+        min_recall_by_label={"oos": 0.80},
+    )
+
+    assert result["configured"] is True
+    assert result["passed"] is False
+    check = next(item for item in result["checks"] if item["label"] == "oos")
+    assert check["observed"] == pytest.approx(0.039)
+    assert check["passed"] is False
+    assert "minimum_recall_not_met" in result["reasons"]
+
+
+def test_task_requirement_fails_closed_when_required_label_is_absent_from_evaluation():
+    result = evaluate_task_requirements(
+        np.asarray(["sports", "sports", "economy", "economy"], dtype=object),
+        np.asarray(["sports", "sports", "economy", "economy"], dtype=object),
+        min_recall_by_label={"oos": 0.80},
+    )
+
+    assert result["passed"] is False
+    check = next(item for item in result["checks"] if item["label"] == "oos")
+    assert check["observed"] is None
+    assert check["support"] == 0
+    assert "required_label_missing_from_evaluation" in result["reasons"]
+
+
+def test_task_requirement_can_require_minimum_precision():
+    result = evaluate_task_requirements(
+        np.asarray(["a", "a", "b", "b"], dtype=object),
+        np.asarray(["a", "b", "b", "b"], dtype=object),
+        min_precision_by_label={"b": 0.90},
+    )
+
+    assert result["passed"] is False
+    check = next(item for item in result["checks"] if item["label"] == "b")
+    assert check["observed"] == pytest.approx(2 / 3)
+    assert check["passed"] is False
+
+
+def test_task_requirement_is_explicitly_unconfigured_when_no_criteria_are_set():
+    result = evaluate_task_requirements(
+        np.asarray(["a", "b"], dtype=object),
+        np.asarray(["a", "b"], dtype=object),
+    )
+    assert result["configured"] is False
+    assert result["passed"] is None
+
+
+def test_cost_config_validates_per_label_thresholds():
+    config = CostConfig(
+        min_recall_by_label={"oos": 0.80},
+        min_precision_by_label={"refund": 0.95},
+    )
+    config.validate()
+
+    with pytest.raises(ValueError, match=r"min_recall_by_label\['oos'\].*in \\[0, 1\\]"):
+        CostConfig(min_recall_by_label={"oos": 1.01}).validate()
+    with pytest.raises(ValueError, match="non-empty strings"):
+        CostConfig(min_recall_by_label={" ": 0.80}).validate()
