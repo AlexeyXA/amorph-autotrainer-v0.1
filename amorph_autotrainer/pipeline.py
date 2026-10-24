@@ -825,11 +825,20 @@ def run_training(
         warnings.append(
             "Near-duplicate audit was skipped because the dataset exceeded its configured row limit; group-disjoint splitting does not prove that cross-group near-duplicates are absent."
         )
+    strategy_cost_values = [
+        value
+        for mapping in (
+            config.strategy_usage_cost_eur_per_query or {},
+            config.strategy_fixed_cost_eur or {},
+        )
+        for value in mapping.values()
+    ]
     tco_inputs_assume_zero = (
         config.compute_eur_per_hour == 0
         and config.fixed_data_cost_eur == 0
         and config.maintenance_cost_eur == 0
         and (config.human_hours == 0 or config.human_eur_per_hour == 0)
+        and not any(value > 0 for value in strategy_cost_values)
     )
     if tco_inputs_assume_zero:
         warnings.append(
