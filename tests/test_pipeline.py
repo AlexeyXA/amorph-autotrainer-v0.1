@@ -249,3 +249,46 @@ def test_cli_fails_closed_when_mandatory_label_recall_requirement_is_not_demonst
     assert gate_result["passed"] is False
     assert "required_label_missing_from_evaluation" in gate_result["reasons"]
     assert any("no candidate is demonstrated" in item for item in report["warnings"])
+
+
+
+def test_tco_mode_requires_explicit_strategy_cost_inputs_when_compute_rate_is_zero(tmp_path, capsys):
+    data_path = create_demo_csv(tmp_path / "tco-unpriced.csv", examples_per_class=12)
+    output_dir = tmp_path / "runs-unpriced"
+    code = cli_main([
+        "train", str(data_path), "--out", str(output_dir),
+        "--strategies", "tfidf", "--max-candidates", "1",
+        "--max-runtime-seconds", "300", "--selection-objective", "tco",
+    ])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "requires explicit" in captured.err
+    assert "tfidf" in captured.err
+    assert not output_dir.exists()
+
+
+def test_tco_mode_accepts_explicit_zero_rates_but_reports_assumed_free_costs(tmp_path, capsys):
+    data_path = create_demo_csv(tmp_path / "tco-priced.csv", examples_per_class=30)
+    output_dir = tmp_path / "runs-priced"
+    code = cli_main([
+        "train", str(data_path), "--out", str(output_dir),
+        "--strategies", "tfidf", "--max-candidates", "1",
+        "--max-runtime-seconds", "300", "--selection-objective", "tco",
+        "--strategy-usage-cost-eur-per-query", "tfidf=0",
+        "--strategy-fixed-cost-eur", "tfidf=0",
+        "--bootstrap-samples", "100",
+    ])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    payload = json.loads(captured.out)
+    assert payload["selection_objective"] == "tco"
+    assert payload["selector"]["selection_objective"] == "tco"
+    assert payload["selector"]["selected_strategy"] == "tfidf"
+    assert payload["selector"]["candidate_costs"]["tfidf"]["estimated_tco_eur"] == 0
+    assert payload["selector"]["candidate_tco_values_differ"] is False
+    report = json.loads(Path(payload["report_path"]).read_text(encoding="utf-8"))
+    assert report["selection_objective"] == "tco"
+    assert report["estimated_tco"]["cost_interpretation"]
+    assert any("assumed-free" in warning for warning in report["warnings"])
