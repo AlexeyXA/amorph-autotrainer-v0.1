@@ -294,6 +294,59 @@ def main() -> int:
     tco_fields = list(tco_rows[0].keys())
     write_dict_csv(tco_path, tco_fields, tco_rows)
 
+    # Apples-to-apples scenario table: all providers see the same estimated
+    # input length and one of a few fixed output-length assumptions.
+    # This is distinct from provider-specific historical response profiles above.
+    common_avg_input = statistics.mean(approximate_token_count(row["question"].strip()) + 100 for row in source_rows)
+    pooled_avg_output = statistics.mean(
+        approximate_token_count(answer_row["text"]) for answer_row in response_rows
+    )
+    common_output_profiles = [
+        ("pooled_historical_mean_output", round(pooled_avg_output, 2)),
+        ("fixed_50_output_tokens", 50.0),
+        ("fixed_100_output_tokens", 100.0),
+    ]
+    common_rows: list[dict[str, Any]] = []
+    for rate in MODEL_RATE_ROWS:
+        for output_profile, output_tokens in common_output_profiles:
+            for nq in volume_scenarios:
+                total_input = round(common_avg_input * nq)
+                total_output = round(output_tokens * nq)
+                cost_usd = (
+                    total_input * float(rate["input_usd_per_million"])
+                    + total_output * float(rate["output_usd_per_million"])
+                ) / 1_000_000
+                common_rows.append({
+                    "provider": rate["provider"],
+                    "model_id": rate["model_id"],
+                    "display_model": rate["display_model"],
+                    "pricing_mode": rate["mode"],
+                    "output_profile": output_profile,
+                    "Nq": nq,
+                    "reference_dataset_queries": len(source_rows),
+                    "Nq_is_actual_owner_volume": False,
+                    "avg_input_tokens_est": round(common_avg_input, 2),
+                    "output_tokens_per_query_assumption": output_tokens,
+                    "total_input_tokens_est": total_input,
+                    "total_output_tokens_est": total_output,
+                    "input_usd_per_million": rate["input_usd_per_million"],
+                    "output_usd_per_million": rate["output_usd_per_million"],
+                    "estimated_token_api_cost_usd": round(cost_usd, 6),
+                    "estimated_token_api_cost_usd_per_query": round(cost_usd / nq, 8),
+                    "estimate_method": (
+                        "common input profile: mean ceil(question characters/4)+100 assumed instruction tokens; "
+                        "same fixed output-token assumption for every provider; not billed usage"
+                    ),
+                    "excluded_costs": (
+                        "tools, retries, caching, cache storage/write, reasoning/output-length variation, "
+                        "human review, hosting, taxes, success/error costs"
+                    ),
+                    "price_source_url": rate["source_url"],
+                })
+    common_tco_path = out / "llm_tco_common_profile_scenarios_promptfoo.csv"
+    common_tco_fields = list(common_rows[0].keys())
+    write_dict_csv(common_tco_path, common_tco_fields, common_rows)
+
     manifest: dict[str, Any] = {
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "dataset": "Promptfoo Political Questions / Political Bias Answers",
@@ -338,7 +391,13 @@ def main() -> int:
                 "rows": len(tco_rows),
                 "sha256": sha256_file(tco_path),
                 "columns": tco_fields,
-                "task": "API token-cost scenarios at Nq=2500/10000/100000/1000000; scenarios are not actual owner traffic",
+                "task": "API token-cost scenarios using provider-specific historical output-length profiles; scenarios are not actual owner traffic",
+            },
+            common_tco_path.name: {
+                "rows": len(common_rows),
+                "sha256": sha256_file(common_tco_path),
+                "columns": common_tco_fields,
+                "task": "apples-to-apples price comparison using the same estimated input and fixed output-token profiles for all current candidates",
             },
         },
         "grouping_policy": (
@@ -368,6 +427,9 @@ def main() -> int:
         "group_ids": len(group_counts),
         "outputs": manifest["outputs"],
         "tco_scenario_rows": len(tco_rows),
+        "common_profile_tco_scenario_rows": len(common_rows),
+        "common_profile_input_tokens_est": round(common_avg_input, 2),
+        "common_profile_output_token_assumptions": common_output_profiles,
         "token_estimation": "ceil(chars/4) + 100 assumed instruction tokens; not provider billed usage",
         "provenance": str(manifest_path),
     }, indent=2, ensure_ascii=False))
