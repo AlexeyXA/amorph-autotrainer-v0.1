@@ -36,5 +36,8 @@ jobs:
             benchmark_runs/promptfoo-model-report/model_response_source_attribution.csv
             benchmark_runs/promptfoo-model-report/political_question_topic.csv
             benchmark_runs/promptfoo-model-report/dataset_provenance.json
+            benchmark_runs/promptfoo-model-report/llm_tco_workload_profile_promptfoo.csv
+            benchmark_runs/promptfoo-model-report/llm_tco_rate_card_2026-10-24.csv
+            benchmark_runs/promptfoo-model-report/llm_tco_scenarios_promptfoo.csv
           if-no-files-found: error
           retention-days: 30
