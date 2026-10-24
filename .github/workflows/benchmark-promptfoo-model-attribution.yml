@@ -49,7 +49,7 @@ jobs:
           mkdir -p benchmark_runs/promptfoo-attribution
           set +e
           amorph-autotrainer train \
-            benchmark_runs/promptfoo/model_response_source_attribution.csv \
+            benchmark_runs/promptfoo/model_response_source_attribution_conflict_free.csv \
             --text-column text \
             --label-column label \
             --group-column group_id \
@@ -98,9 +98,11 @@ jobs:
               "dataset": "Promptfoo Political Questions / Political Bias Answers",
               "dataset_revision": prov.get("source_revision"),
               "dataset_source_sha256": prov.get("source_file_sha256"),
-              "prepared_data_sha256": prov.get("outputs", {}).get("model_response_source_attribution.csv", {}).get("sha256"),
-              "rows": prov.get("model_response_rows"),
-              "groups": prov.get("unique_group_ids"),
+              "prepared_data_sha256": prov.get("outputs", {}).get("model_response_source_attribution_conflict_free.csv", {}).get("sha256"),
+              "raw_source_rows": prov.get("model_response_rows"),
+              "raw_source_groups": prov.get("unique_group_ids"),
+              "rows": prov.get("outputs", {}).get("model_response_source_attribution_conflict_free.csv", {}).get("rows"),
+              "groups": prov.get("source_attribution_conflict_audit", {}).get("retained_question_groups"),
               "classes": prov.get("model_response_label_counts"),
               "group_split_column": "group_id == question_id; all four responses to one source question stay together",
               "amorph_run_status": report.get("status"),
@@ -114,6 +116,7 @@ jobs:
               "limitations": [
                   "Data contains 2025-era responses from GPT-4.1, Claude Opus 4, Gemini 2.5 Pro and Grok 4, not current releases.",
                   "Exact grouping prevents responses to the same question from crossing splits; semantic near-duplicates across different questions are not proven absent.",
+                  "Whole question groups with normalized exact response text conflicts across model labels were removed; the original unfiltered CSV remains in the prepared dataset artifact.",
                   "Near-duplicate audit may be skipped above the configured row cap.",
                   "No hosted model API calls were made during this AMORPH run.",
                   "Official source attribution is not answer correctness, safety, usefulness or business quality.",
