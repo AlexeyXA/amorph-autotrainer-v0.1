@@ -187,13 +187,26 @@ def _choose_candidate_by_objective(
             "requires explicit per-strategy inputs. If candidate TCO ties, runtime proxy is only a tie-breaker."
         ),
     }
-    if config.selection_objective == "tco" and config.compute_eur_per_hour > 0 and not (
-        config.strategy_usage_cost_eur_per_query or config.strategy_fixed_cost_eur
-    ):
-        selector_report["warning"] = (
-            "Only a uniform compute rate and shared costs were supplied; ranking is mathematically equivalent "
-            "to the runtime proxy under these assumptions. Add candidate-specific usage/setup rates when they differ."
-        )
+    if config.selection_objective == "tco" and config.compute_eur_per_hour > 0:
+        missing_components = {
+            name: [
+                component for component, mapping in (
+                    ("strategy_usage_cost_eur_per_query", config.strategy_usage_cost_eur_per_query or {}),
+                    ("strategy_fixed_cost_eur", config.strategy_fixed_cost_eur or {}),
+                )
+                if name not in mapping
+            ]
+            for name in eligible_names
+        }
+        if any(missing_components.values()):
+            selector_report["assumed_zero_strategy_components"] = {
+                name: components for name, components in missing_components.items() if components
+            }
+            selector_report["warning"] = (
+                "One or more strategy-specific usage/setup cost components were not supplied and are treated as zero. "
+                "With only a uniform compute rate and shared costs, ranking is mathematically equivalent to runtime proxy; "
+                "supply differing candidate-specific rates when applicable."
+            )
     return selected_name, selector_report
 
 
@@ -331,6 +344,7 @@ def run_training(
                 fit_seconds=preprocessing_seconds + candidate.fit_seconds,
                 inference_seconds_per_query=candidate.latency_seconds_per_example,
                 config=config,
+                strategy_name=name,
             )
             database.record({
                 "run_id": run_id,
@@ -750,6 +764,8 @@ def run_training(
     _write_json(final_artifact_dir / "proofgate" / "selected_candidate.json", selected_proofgate_payload)
     _write_json(final_artifact_dir / "proofgate" / "baseline_reference.json", baseline_proofgate_payload)
     warnings: list[str] = []
+    if selector_report.get("warning"):
+        warnings.append(str(selector_report["warning"]))
     if not (config.min_recall_by_label or config.min_precision_by_label):
         warnings.append(
             "No task-specific per-label requirements were configured; the statistical Proof Gate does not establish that every business-critical class meets its own threshold."
@@ -890,6 +906,8 @@ def run_training(
         "candidate_errors": candidate_errors,
         "selected_before_acceptance_gate": selected_name,
         "selection_rule": selection_rule,
+        "selection_objective": config.selection_objective,
+        "selector": selector_report,
         "validation_eligible_candidates": validation_eligible_candidates,
         "acceptance_gate_comparison": {
             "selected_candidate_scope": selected_gate_scope,
@@ -921,6 +939,7 @@ def run_training(
             fit_seconds=final_candidate.fit_seconds,
             inference_seconds_per_query=final_candidate.latency_seconds_per_example,
             config=config,
+            strategy_name=final_name,
         ),
         "limitations": [
             "The paired bootstrap interval estimates uncertainty on the independent acceptance-gate sample conditional on fitted models; it does not capture retraining variance.",
@@ -1013,11 +1032,13 @@ def run_training(
         fit_seconds=preprocessing_seconds + final_candidate.fit_seconds,
         inference_seconds_per_query=final_candidate.latency_seconds_per_example,
         config=config,
+        strategy_name=final_name,
     )
     manifest["full_selection_run_tco"] = estimate_tco_eur(
         fit_seconds=elapsed_total_seconds,
         inference_seconds_per_query=final_candidate.latency_seconds_per_example,
         config=config,
+        strategy_name=final_name,
     )
     manifest["estimated_tco"] = manifest["full_selection_run_tco"]
     _write_json(root / "report.json", manifest)
@@ -1053,6 +1074,7 @@ def run_training(
                 fit_seconds=preprocessing_seconds + cand.fit_seconds,
                 inference_seconds_per_query=cand.latency_seconds_per_example,
                 config=config,
+                strategy_name=name,
             )),
             "artifact_path": str(root / "candidates" / name),
             "error": None,
@@ -1066,6 +1088,8 @@ def run_training(
         "selected_strategy": final_name,
         "selected_before_acceptance_gate": selected_name,
         "validation_metrics": val_metrics,
+        "selection_objective": config.selection_objective,
+        "selector": selector_report,
         "task_requirements": manifest["task_requirements"],
         "business_requirements_passed": business_requirements_passed,
         "baseline_test_metrics": baseline_test_metrics,
