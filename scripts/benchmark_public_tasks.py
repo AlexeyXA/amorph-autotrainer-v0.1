@@ -18,9 +18,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-BANKING77_ID = "PolyAI/banking77"
-BANKING77_REVISION = "8eed2b348ec07d40ffbe91dcc4718e2f0f977714"
-BANKING77_URL = "https://huggingface.co/datasets/PolyAI/banking77"
+BANKING77_ID = "PolyAI-LDN/task-specific-datasets/banking_data"
+BANKING77_REVISION = "9d081458ff52e53cf7e848f414e6e9344e4e6696"
+BANKING77_URL = "https://raw.githubusercontent.com/PolyAI-LDN/task-specific-datasets/9d081458ff52e53cf7e848f414e6e9344e4e6696/banking_data"
+BANKING77_TRAIN_SHA256 = "b06e26ac675513959a63135f11b94ea7786ed02da65db93a5650d8838cbc664b"
+BANKING77_TEST_SHA256 = "d12d6e3bc4c3103966ae786dc435913c0c563dfa328f5a3646d0e62cfeeb474d"
 CLINC150_URL = "https://cdn.uci-ics-mlr-prod.aws.uci.edu/570/clinc150.zip"
 CLINC150_CARD = "https://archive.ics.uci.edu/dataset/570/clinc150"
 
@@ -48,35 +50,56 @@ def write_csv(path: Path, rows: list[dict[str, str]]) -> None:
 
 
 def load_banking77(cache: Path):
-    from datasets import load_dataset
-    from huggingface_hub import HfApi
+    import csv
+    import io
+    import requests
 
-    info = HfApi().dataset_info(BANKING77_ID, revision=BANKING77_REVISION)
-    if info.sha != BANKING77_REVISION:
-        raise RuntimeError(f"BANKING77 revision mismatch: {info.sha}")
-    ds = load_dataset(BANKING77_ID, revision=BANKING77_REVISION, cache_dir=str(cache))
-    if "train" not in ds or "test" not in ds:
-        raise RuntimeError(f"Unexpected BANKING77 splits: {list(ds)}")
+    cache.mkdir(parents=True, exist_ok=True)
 
-    def rows(split):
-        cols = set(split.column_names)
-        tc = "text" if "text" in cols else "utterance"
-        lc = "label" if "label" in cols else "category"
-        label_names = getattr(split.features[lc], "names", None)
-        result = []
-        for item in split:
-            text = str(item.get(tc) or "").strip()
-            label_value = item.get(lc)
-            label = str(label_names[label_value]) if label_names is not None and isinstance(label_value, int) else str(label_value).strip()
-            if text and label:
-                result.append({"text": text, "label": label})
-        return result
+    def fetch(name, expected_hash):
+        path = cache / name
+        if not path.exists():
+            url = f"{BANKING77_URL}/{name}"
+            response = requests.get(url, timeout=(20, 120))
+            response.raise_for_status()
+            payload = response.content
+            actual_hash = hashlib.sha256(payload).hexdigest()
+            if actual_hash != expected_hash:
+                raise RuntimeError(f"BANKING77 {name} checksum mismatch: expected {expected_hash}, got {actual_hash}")
+            path.write_bytes(payload)
+        actual_hash = sha256_file(path)
+        if actual_hash != expected_hash:
+            raise RuntimeError(f"Cached BANKING77 {name} checksum mismatch: expected {expected_hash}, got {actual_hash}")
+        return path
 
-    return rows(ds["train"]), rows(ds["test"]), {
+    train_path = fetch("train.csv", BANKING77_TRAIN_SHA256)
+    test_path = fetch("test.csv", BANKING77_TEST_SHA256)
+
+    def rows(path):
+        with path.open("r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f)
+            if not reader.fieldnames or "text" not in reader.fieldnames or "category" not in reader.fieldnames:
+                raise RuntimeError(f"Unexpected BANKING77 CSV header in {path}: {reader.fieldnames}")
+            result = []
+            for item in reader:
+                text = str(item.get("text") or "").strip()
+                label = str(item.get("category") or "").strip()
+                if text and label:
+                    result.append({"text": text, "label": label})
+            return result
+
+    train_rows, test_rows = rows(train_path), rows(test_path)
+    if len(train_rows) != 10003 or len(test_rows) != 3080:
+        raise RuntimeError(f"BANKING77 row count mismatch: train={len(train_rows)}, test={len(test_rows)}")
+    return train_rows, test_rows, {
         "dataset_id": BANKING77_ID,
-        "revision": info.sha,
+        "revision": BANKING77_REVISION,
         "source_url": BANKING77_URL,
         "license": "CC BY 4.0",
+        "source_file_sha256": {
+            "train.csv": BANKING77_TRAIN_SHA256,
+            "test.csv": BANKING77_TEST_SHA256,
+        },
         "train_split": "official train only",
         "validation_split": "not used; AMORPH creates its own internal split from official train",
         "test_split": "official test; report-only after selector and Proof Gate",
@@ -85,7 +108,6 @@ def load_banking77(cache: Path):
             "English banking intent benchmark; not the owner's production traffic.",
         ],
     }
-
 
 def load_clinc150(cache: Path):
     import requests
