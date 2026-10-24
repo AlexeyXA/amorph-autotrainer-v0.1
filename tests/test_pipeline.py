@@ -248,4 +248,4 @@ def test_cli_fails_closed_when_mandatory_label_recall_requirement_is_not_demonst
     gate_result = report["task_requirements"]["baseline_acceptance_gate"]
     assert gate_result["passed"] is False
     assert "required_label_missing_from_evaluation" in gate_result["reasons"]
-    assert any("No candidate is demonstrated" in item for item in report["warnings"])
+    assert any("no candidate is demonstrated" in item for item in report["warnings"])
