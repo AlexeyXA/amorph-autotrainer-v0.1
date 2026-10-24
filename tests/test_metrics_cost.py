@@ -224,5 +224,5 @@ def test_cost_config_rejects_unknown_selection_objective_and_negative_strategy_r
         CostConfig(selection_objective="cheapest").validate()
     with pytest.raises(ValueError, match="must be >= 0"):
         CostConfig(strategy_usage_cost_eur_per_query={"e5": -0.01}).validate()
-    with pytest.raises(ValueError, match="must be finite"):
+    with pytest.raises(ValueError, match="finite number"):
         CostConfig(strategy_fixed_cost_eur={"e5": float("inf")}).validate()
