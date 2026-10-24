@@ -222,7 +222,7 @@ def main() -> int:
 
     import joblib
     import numpy as np
-    from sklearn.metrics import accuracy_score, f1_score, recall_score
+    from sklearn.metrics import accuracy_score, f1_score, precision_recall_fscore_support, recall_score
     from amorph_autotrainer.cost import CostConfig
     from amorph_autotrainer.pipeline import run_training
     from amorph_autotrainer.strategies import E5Candidate
@@ -258,8 +258,26 @@ def main() -> int:
     fixed_labels = sorted(train_labels)
     metrics = {}
 
+    train_label_counts = {label: sum(1 for row in train_rows if row["label"] == label) for label in train_labels}
+    all_report_labels = sorted(train_labels | test_labels)
+
     def score(predictions):
         y_pred = np.asarray(predictions, dtype=object)
+        precision, per_class_recall, per_class_f1, support = precision_recall_fscore_support(
+            y_true, y_pred, labels=all_report_labels, average=None, zero_division=0
+        )
+        per_class_metrics = []
+        for i, label in enumerate(all_report_labels):
+            per_class_metrics.append({
+                "label": label,
+                "training_support": int(train_label_counts.get(label, 0)),
+                "official_test_support": int(support[i]),
+                "predicted_support": int(np.count_nonzero(y_pred == label)),
+                "precision": float(precision[i]),
+                "recall": float(per_class_recall[i]),
+                "f1": float(per_class_f1[i]),
+            })
+        oos_metrics = next((item for item in per_class_metrics if item["label"] == "oos"), None)
         return {
             "accuracy": float(accuracy_score(y_true, y_pred)),
             "macro_f1_fixed_training_label_universe": float(f1_score(
@@ -268,9 +286,17 @@ def main() -> int:
             "balanced_accuracy_fixed_training_label_universe": float(recall_score(
                 y_true, y_pred, labels=fixed_labels, average="macro", zero_division=0
             )),
+            "macro_f1_official_test_label_universe": float(f1_score(
+                y_true, y_pred, labels=sorted(test_labels), average="macro", zero_division=0
+            )),
+            "balanced_accuracy_official_test_label_universe": float(recall_score(
+                y_true, y_pred, labels=sorted(test_labels), average="macro", zero_division=0
+            )),
             "official_test_rows": len(y_true),
             "training_label_count": len(fixed_labels),
             "official_test_labels_absent_from_training": sorted(test_labels - train_labels),
+            "per_class_metrics": per_class_metrics,
+            "oos_metrics": oos_metrics,
             "scope": "report_only_after_selection_and_gate",
         }
 
