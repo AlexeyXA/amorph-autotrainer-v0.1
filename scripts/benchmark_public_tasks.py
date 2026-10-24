@@ -199,6 +199,7 @@ def main() -> int:
     data.mkdir(parents=True, exist_ok=True)
 
     train_rows, test_rows, provenance = load_banking77(cache) if args.dataset == "banking77" else load_clinc150(cache)
+    import numpy as np
     if not train_rows or not test_rows:
         raise RuntimeError("Dataset train and test must both be non-empty")
     train_labels = {r["label"] for r in train_rows}
