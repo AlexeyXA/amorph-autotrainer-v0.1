@@ -13,6 +13,17 @@
 | 7 | Proof Gate limitations and safe-use documentation | **done** — `docs/PROOFGATE_LIMITATIONS.md` |
 | 8 | Owner domain CSV run with artifact hashes | **owner action required** — not yet demonstrated on the owner domain |
 | 9 | Multi-seed protocol for promoting experimental E5/hybrid | **open** — not required for the v0.1 protocol freeze; required before stronger generalization claims |
+| 10 | Task-specific critical-class acceptance constraints | **implemented in draft PR #27** — repeatable per-label recall/precision floors; checked on validation and acceptance gate independently of aggregate Proof Gate; test suite green on draft SHA `58dfee9d3642ae7a0144d238e5be56dc24f94efc` |
+
+## Draft follow-up — public task verification and per-label constraints (2026-10-24)
+
+These are **not merged into `main`**. See Draft PR [#27](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/pull/27).
+
+- Reproducible public tasks: BANKING77, CLINC150 + OOS, and MASSIVE ru-RU. Latest successful public workflow: [#40080734847](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/40080734847).
+- Key finding: CLINC150 E5 passed aggregate Macro-F1 Proof Gate but reached only 3.9% OOS recall on the untouched official test. This demonstrates that task-critical constraints must be configured separately; see [Issue #28](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/issues/28).
+- Draft implementation adds `--min-recall-by-label LABEL=THRESHOLD` and `--min-precision-by-label LABEL=THRESHOLD`. Candidate eligibility checks them on validation; acceptance checks them separately on the gate. Final `business_requirements_passed` is false unless both validation and gate meet every configured requirement. CLI returns exit code 5 when the final model fails those requirements.
+- Documentation: [task-specific acceptance contract](TASK_SPECIFIC_ACCEPTANCE.md). CI succeeded on source SHA `58dfee9d3642ae7a0144d238e5be56dc24f94efc`: [run #40084663031](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/40084663031).
+- These controls only evaluate the supplied samples. They do not guarantee future OOS performance or handle arbitrary distribution shift; CLINC150 official test must not be used to tune a threshold or claim confirmatory success.
 
 ## Merged milestones
 
