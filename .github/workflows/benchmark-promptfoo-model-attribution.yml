@@ -147,3 +147,11 @@ jobs:
             benchmark_runs/promptfoo-attribution/**/selected/**
           if-no-files-found: warn
           retention-days: 30
+      - name: Propagate AMORPH benchmark exit code
+        if: always()
+        run: |
+          code=$(cat benchmark_runs/promptfoo-attribution/cli_exit_code.txt 2>/dev/null || echo 99)
+          if [ "$code" -ne 0 ]; then
+            echo "AMORPH benchmark did not return success; exit code=$code"
+            exit "$code"
+          fi
