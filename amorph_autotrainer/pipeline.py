@@ -117,6 +117,7 @@ def _choose_candidate_by_objective(
     inference_seconds_per_query_by_strategy: dict[str, float],
     config: CostConfig,
     preprocessing_seconds: float = 0.0,
+    diagnostic_only: bool = False,
 ) -> tuple[str, dict[str, Any]]:
     """Choose an eligible candidate by runtime proxy or estimated euro TCO.
 
@@ -165,7 +166,13 @@ def _choose_candidate_by_objective(
     selector_report = {
         "selection_objective": config.selection_objective,
         "selected_strategy": selected_name,
-        "eligible_candidates": list(eligible_names),
+        "selection_status": (
+            "diagnostic_only_no_validation_eligible_candidates"
+            if diagnostic_only else "selected_among_validation_eligible_candidates"
+        ),
+        "diagnostic_only": bool(diagnostic_only),
+        "eligible_candidates": [] if diagnostic_only else list(eligible_names),
+        "candidates_considered": list(eligible_names),
         "candidate_costs": costs,
         "minimum_estimated_tco_eur": float(minimum_tco),
         "tco_tied_candidates": tied_names,
@@ -184,7 +191,11 @@ def _choose_candidate_by_objective(
         "interpretation": (
             "TCO is an estimate from supplied rates, expected query volume and fit/latency measurements. "
             "Unspecified strategy-specific components are treated as zero unless the zero-rate TCO mode "
-            "requires explicit per-strategy inputs. If candidate TCO ties, runtime proxy is only a tie-breaker."
+            "requires explicit per-strategy inputs. If candidate TCO ties, runtime proxy is only a tie-breaker. "
+            + (
+                "No candidate met validation requirements; this ranking is diagnostic only and is not a quality-eligible selection. "
+                if diagnostic_only else ""
+            )
         ),
     }
     if config.selection_objective == "tco" and config.compute_eur_per_hour > 0:
@@ -447,6 +458,7 @@ def run_training(
         },
         config=config,
         preprocessing_seconds=preprocessing_seconds,
+        diagnostic_only=not bool(validation_eligible_candidates),
     )
     if config.selection_objective == "tco":
         selection_rule = "minimum estimated monetary TCO among validation-eligible candidates; runtime proxy breaks exact TCO ties"
