@@ -20,51 +20,50 @@ Official model/system cards from OpenAI, Anthropic, xAI and Google normally repo
 
 ## Normalized files created by the preparation workflow
 
-The GitHub Actions workflow `Prepare public four-model report dataset` downloads the pinned source, checks the schema/count, records SHA-256 provenance, and publishes these artifacts:
+The GitHub Actions workflow downloads the pinned source, checks the schema/count, records SHA-256 provenance, and publishes the derived CSVs without uploading the original wide source CSV.
 
-### 1. `model_response_source_attribution.csv`
-
-Exactly three columns: `text,label,group_id`. This is the raw derived view of the source and still contains a small number of exact normalized answers shared between different model labels. Do not run the current AMORPH training pipeline on this raw version without conflict handling: `load_records` correctly rejects contradictory labels for identical normalized text.
-
-### 2. `model_response_source_attribution_conflict_free.csv`
-
-Also exactly three columns: `text,label,group_id`. This is the recommended training/evaluation input for AMORPH. The preparation script normalizes each response with Unicode NFKC, trim, casefold and whitespace collapse. If an identical normalized response appears with multiple model labels, it removes **the entire question group** rather than deleting an arbitrary answer. This preserves the grouped-split unit and equal model counts per retained question. The provenance manifest records the number of conflicting normalized answers, rows/groups excluded and SHA-256 of the conflict-key set; it never stores the raw conflicting texts.
-
-```bash
-amorph-autotrainer train model_response_source_attribution_conflict_free.csv \
-  --text-column text --label-column label --group-column group_id \
-  --strategies tfidf,e5 --max-candidates 2 --out runs/model-source-attribution
-```
-
-The expected current source snapshot retains 2,495 of 2,500 question groups (9,980 response rows) after dropping 5 groups containing 3 conflicting normalized response texts. This count is verified by the pinned preparation run, but the script recalculates it on every run and fails closed on schema/count changes.
-
-### 3. `political_question_topic.csv`
+### 1. `model_response_source_attribution.csv` — raw derived data
 
 Exactly three columns: `text,label,group_id`.
 
 - `text`: the complete response from one model.
 - `label`: one of `gpt-4.1`, `claude-opus-4`, `gemini-2.5-pro`, `grok-4`.
-- `group_id`: the corresponding `question_id`; all four answers to the same question share this ID.
+- `group_id`: the corresponding `question_id`; all four responses to the same question share this ID.
 
-Expected size: 10,000 rows if all four model responses are present for all 2,500 questions. The script fails closed rather than silently dropping a missing response.
+Expected size: 10,000 rows over 2,500 groups. This file is preserved as a faithful derived view of the source. It contains a few identical normalized responses with conflicting model labels, so the current AMORPH trainer correctly refuses to train on it without resolving those conflicts.
 
-**What this task tests:** a classifier’s ability to identify the originating model family from its response, with all responses to the same prompt kept in one split. It is useful for testing AMORPH's CSV ingestion, group-aware splitting and repeatability across real model outputs.
+### 2. `model_response_source_attribution_conflict_free.csv` — recommended AMORPH input
 
-**What it does not test:** whether an answer is correct, useful, safe, unbiased or the cheapest acceptable output. Model identity is the label, not answer quality.
+Also exactly three columns: `text,label,group_id`. The preparation script normalizes each response using Unicode NFKC, trim, casefold and whitespace collapse. If the same normalized response occurs with multiple model labels, it removes **the entire question group** rather than deleting an arbitrary answer. This keeps all four model answers together and preserves equal model counts for each retained question.
 
-### 2. `political_question_topic.csv`
+For the pinned source revision on 2026-10-24, the audit found **3 conflicting normalized response texts affecting 10 response rows across 5 question groups**. Removing those groups retains 2,495 groups and 9,980 response rows (2,495 per model). The provenance JSON records counts and SHA-256 of the conflict-key set, but never publishes the raw conflicting text. The script recalculates these values every run and fails closed if the schema/source count changes.
+
+Train using the conflict-free file and group by question ID:
+
+```bash
+amorph-autotrainer train model_response_source_attribution_conflict_free.csv \
+  --text-column text --label-column label --group-column group_id \
+  --strategies tfidf,e5 --max-candidates 2 \
+  --out runs/model-source-attribution
+```
+
+### 3. `political_question_topic.csv` — topic classification
 
 Exactly three columns: `text,label,group_id`.
 
 - `text`: the source question.
-- `label`: the source-provided topic `axis`.
+- `label`: the source-provided topic `axis` (the actual pinned file contains `economic` and `social`).
 - `group_id`: the source `question_id`.
 
-Expected size: 2,500 rows. This is a simpler topic-classification dataset derived from the same evaluation source.
+Expected size: 2,500 rows. It is useful for a separate grouped topic-classification experiment.
 
-### 3. `dataset_provenance.json`
+### 4. `dataset_provenance.json`
 
-Contains the pinned source revision and URL, the source file SHA-256, row counts, group counts, per-class counts, output file hashes, licence and limitations. The original wide source CSV is used only in the runner’s cache and is not uploaded as an artifact.
+Contains the pinned source revision and URL, source file SHA-256, original and filtered row/group counts, labels, conflict audit, hashes for every output CSV, license and limitations. The full raw source CSV stays in the runner cache and is not uploaded as a GitHub Actions artifact.
+
+**What these datasets test:** source attribution and topic classification, plus AMORPH's CSV ingestion and group-aware splitting.
+
+**What they do not test:** whether an answer is correct, useful, safe, unbiased or the cheapest acceptable output. Model identity is a source label, not an answer-quality label. The source-attribution task remains a public pipeline benchmark, not an economic evaluation of model performance.
 
 ## Additional token-cost profile and scenarios (not proof of savings)
 
