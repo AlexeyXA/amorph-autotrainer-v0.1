@@ -17,11 +17,11 @@ Post status as **issue comments**, not only in private chat. Prefix: `[Grok]` or
 | **Product decisions** | **Owner (AlexeyXA)** | Defaults (E5), merge authority, domain datasets, “ready for my use” |
 
 ### GPT current track
-1. **Proof Gate Phase C1** — dual-write/shadow in pipeline (this unified PR)
-2. **Phase C2** — decision cut-over after ACCEPT/REJECT parity (self-comparison stays non-ACCEPT)
-3. **Phase D** — `examples/sklearn_holdout_gate.py` + `docs/PROOFGATE_LIMITATIONS.md`
-4. Do **not** expand embedder zoo (BGE/GTE) while C/D open
-5. Do **not** merge draft PR #4; do **not** change E5 production defaults without owner
+1. **Phase C1, C2 and Phase D are complete and merged** — see `docs/READINESS.md` and PRs #13, #14, #15. Do not repeat these phases unless a concrete regression is found.
+2. **P0: owner-domain readiness.** Keep the Russian owner runbook in PR #18 accurate; prepare one reproducible run on the owner's real labelled CSV only when it is available. Never upload private data to GitHub or substitute a public benchmark and call it owner-domain validation.
+3. Before the owner-data run, do not claim domain readiness. Record only a safe summary and hashes; preserve raw data and complete artifacts locally when sensitive.
+4. **Known product gap:** the current Selector uses a runtime proxy, not monetary TCO minimization. Do not claim cost optimality or implement/change defaults as though it were already delivered. TCO selection remains a distinct follow-up with explicit tests.
+5. Do not expand the embedder zoo while the domain-readiness gap is open; do not merge draft PR #4; do not change E5 production defaults without owner approval.
 
 ### Grok current track
 - Readiness checklist and role enforcement
