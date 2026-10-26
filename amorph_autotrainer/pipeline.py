@@ -16,7 +16,7 @@ import numpy as np
 from .cost import CostConfig, estimate_tco_eur
 from .data import load_records, split_records
 from .experiment_db import ExperimentDB
-from .metrics import classification_metrics, gate_candidate, paired_stratified_bootstrap_macro_f1
+from .metrics import classification_metrics, evaluate_task_requirements, gate_candidate, paired_stratified_bootstrap_macro_f1
 from .proofgate import PROOFGATE_VERSION, Verdict, evaluate as evaluate_proofgate
 from .strategies import E5Candidate, HybridTfidfE5Candidate, TfidfCandidate, FittedCandidate
 from .strategy_abi import build_replay_descriptor, run_conformance_checks
@@ -176,6 +176,7 @@ def run_training(
 
     candidates: dict[str, FittedCandidate] = {}
     val_metrics: dict[str, dict[str, Any]] = {}
+    validation_task_requirements: dict[str, dict[str, Any]] = {}
     candidate_errors: dict[str, str] = {}
 
     for name in strategy_names:
@@ -213,9 +214,17 @@ def run_training(
                 raise ValueError(f"Unsupported strategy: {name}")
 
             metrics = classification_metrics(bundle.val_labels, candidate.val_pred)
+            task_requirements = evaluate_task_requirements(
+                bundle.val_labels,
+                candidate.val_pred,
+                min_recall_by_label=config.min_recall_by_label,
+                min_precision_by_label=config.min_precision_by_label,
+            )
             candidates[name] = candidate
             val_metrics[name] = metrics
+            validation_task_requirements[name] = task_requirements
             _write_json(candidate_dir / "validation_metrics.json", metrics)
+            _write_json(candidate_dir / "task_requirements_validation.json", task_requirements)
             _write_json(candidate_dir / "strategy.json", strategy_metadata)
 
             cost = estimate_tco_eur(
@@ -306,6 +315,7 @@ def run_training(
     eligible = [
         name for name, met in val_metrics.items()
         if met["macro_f1"] >= threshold
+        and validation_task_requirements[name].get("passed") is not False
     ]
     validation_eligible_candidates = list(eligible)
     validation_eligible_challengers = [name for name in validation_eligible_candidates if name != "tfidf"]
@@ -324,6 +334,8 @@ def run_training(
     selected_name = min(eligible, key=runtime_proxy)
     selected = candidates[selected_name]
     baseline = candidates["tfidf"]
+    selected_validation_task_requirements = validation_task_requirements[selected_name]
+    selected_validation_eligible = selected_name in validation_eligible_candidates
 
     def predict_candidate(candidate: FittedCandidate, name: str, texts: list[str]) -> np.ndarray:
         if name == "e5":
@@ -337,6 +349,18 @@ def run_training(
     # Phase C2 cut-over: Proof Gate owns the decision; legacy is audit-only.
     gate_baseline_pred = predict_candidate(baseline, "tfidf", bundle.gate_texts)
     gate_selected_pred = predict_candidate(selected, selected_name, bundle.gate_texts)
+    baseline_gate_task_requirements = evaluate_task_requirements(
+        bundle.gate_labels,
+        gate_baseline_pred,
+        min_recall_by_label=config.min_recall_by_label,
+        min_precision_by_label=config.min_precision_by_label,
+    )
+    selected_gate_task_requirements = evaluate_task_requirements(
+        bundle.gate_labels,
+        gate_selected_pred,
+        min_recall_by_label=config.min_recall_by_label,
+        min_precision_by_label=config.min_precision_by_label,
+    )
     gate_split_sha256 = (
         bundle.report.get("splits", {}).get("acceptance_gate", {}).get("sha256")
     )
@@ -450,8 +474,13 @@ def run_training(
     # compatibility/audit calculation. The legacy comparison can only veto ACCEPT
     # on a detected mismatch; it can never promote REJECT or INCONCLUSIVE.
     # The untouched test split is evaluated only after final_name has been fixed.
-    candidate_accepted = _proofgate_may_accept_candidate(
-        selected_name, selected_proofgate.verdict, proofgate_parity_status
+    candidate_accepted = (
+        _proofgate_may_accept_candidate(
+            selected_name, selected_proofgate.verdict, proofgate_parity_status
+        )
+        and selected_validation_eligible
+        and selected_validation_task_requirements.get("passed") is not False
+        and selected_gate_task_requirements.get("passed") is not False
     )
     if candidate_accepted:
         final_name = selected_name
@@ -460,6 +489,19 @@ def run_training(
         final_name = "tfidf"
         final_gate = baseline_gate
     final_candidate = candidates[final_name]
+    final_task_requirements = (
+        baseline_gate_task_requirements if final_name == "tfidf"
+        else selected_gate_task_requirements
+    )
+    final_validation_task_requirements = validation_task_requirements[final_name]
+    task_requirements_configured = bool(config.min_recall_by_label or config.min_precision_by_label)
+    if task_requirements_configured:
+        business_requirements_passed = (
+            final_validation_task_requirements.get("passed") is True
+            and final_task_requirements.get("passed") is True
+        )
+    else:
+        business_requirements_passed = None
 
     final_gate_macro_f1 = final_gate.get("candidate_macro_f1")
     absolute_target_passed = (
@@ -482,6 +524,13 @@ def run_training(
         final_status = "acceptance_gate_inconclusive"
     elif proofgate_parity_status == "mismatch":
         final_status = "proofgate_legacy_parity_mismatch"
+    elif business_requirements_passed is False:
+        final_status = "task_requirements_not_met"
+    elif selected_name != final_name and (
+        selected_validation_task_requirements.get("passed") is False
+        or selected_gate_task_requirements.get("passed") is False
+    ):
+        final_status = "baseline_kept_candidate_task_requirements_failed"
     elif absolute_target_passed is False:
         final_status = "target_not_met"
     elif selected_name != final_name:
@@ -692,6 +741,23 @@ def run_training(
         "replay_descriptor_path": "replay.json",
         "replay_descriptor": replay_descriptor,
         "validation_metrics_all_candidates": val_metrics,
+        "task_requirements": {
+            "configured": task_requirements_configured,
+            "criteria": {
+                "min_recall_by_label": config.min_recall_by_label or {},
+                "min_precision_by_label": config.min_precision_by_label or {},
+            },
+            "validation_by_candidate": validation_task_requirements,
+            "selected_candidate_validation_passed": selected_validation_task_requirements.get("passed"),
+            "selected_candidate_validation_eligible": selected_validation_eligible,
+            "selected_candidate_acceptance_gate": selected_gate_task_requirements,
+            "baseline_acceptance_gate": baseline_gate_task_requirements,
+            "final_model_validation": final_validation_task_requirements,
+            "final_model_acceptance_gate": final_task_requirements,
+            "business_requirements_passed": business_requirements_passed,
+            "interpretation": "Per-label rules are separate from aggregate Proof Gate and cover only the supplied validation/gate samples; they do not guarantee future-distribution performance.",
+        },
+        "business_requirements_passed": business_requirements_passed,
         "candidate_errors": candidate_errors,
         "selected_before_acceptance_gate": selected_name,
         "selection_rule": selection_rule,
@@ -868,6 +934,7 @@ def run_training(
         "run_dir": str(root),
         "database_path": str(Path(output_dir) / "experiments.sqlite3"),
         "status": final_status,
+        "business_requirements_passed": business_requirements_passed,
         "selected_strategy": final_name,
         "selected_before_acceptance_gate": selected_name,
         "validation_metrics": val_metrics,
