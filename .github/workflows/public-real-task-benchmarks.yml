@@ -62,12 +62,19 @@ jobs:
               --output-dir "benchmark_runs/${{ matrix.output_dir }}" \
               --max-runtime-seconds 7200
           else
+            task_gate_args=()
+            if [ "${{ matrix.task }}" = "clinc150" ]; then
+              # Diagnostic-only benchmark guardrail, not an AMORPH default.
+              # The CLINC official test has already been inspected; it remains report-only.
+              task_gate_args+=(--min-recall-by-label "oos=0.80")
+            fi
             python scripts/benchmark_public_tasks.py \
               --dataset "${{ matrix.task }}" \
               --with-e5 \
               --output-dir "benchmark_runs/${{ matrix.output_dir }}" \
               --max-runtime-seconds 7200 \
-              --expected-queries 1000
+              --expected-queries 1000 \
+              "${task_gate_args[@]}"
           fi
       - name: Record immutable execution manifest and summary
         if: always()
@@ -117,6 +124,10 @@ jobs:
               "dataset_id": provenance.get("dataset_id", provenance.get("dataset", nested.get("dataset_id", "AmazonScience/massive"))),
               "dataset_revision": provenance.get("revision", provenance.get("dataset_revision", nested.get("revision", nested.get("dataset_revision")))),
               "selected_strategy": result.get("selected_strategy"),
+              "task_acceptance_policy": result.get("task_acceptance_policy", {}),
+              "business_requirements_passed": result.get("internal_run", {}).get("business_requirements_passed"),
+              "proofgate_verdict": result.get("internal_run", {}).get("proofgate", {}).get("selected_candidate_verdict"),
+              "internal_run_status": result.get("internal_run", {}).get("status"),
               "official_test_metrics": result.get("external_official_test_metrics_by_strategy", result.get("external_test_metrics_by_strategy", {})),
               "file_inventory_sha256": files,
           }
