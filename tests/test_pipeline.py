@@ -373,7 +373,7 @@ def test_tco_candidate_selector_fails_closed_for_unknown_strategy_costs():
         raise AssertionError("TCO selector must fail closed for unknown candidate cost components")
 
 
-def test_final_tco_report_matches_selector_including_preprocessing_cost(tmp_path):
+def test_selected_model_tco_matches_selector_and_full_run_cost_is_separate(tmp_path):
     data_path = create_demo_csv(tmp_path / "tco-report.csv", examples_per_class=30)
     result = run_training(
         csv_path=data_path,
@@ -395,6 +395,12 @@ def test_final_tco_report_matches_selector_including_preprocessing_cost(tmp_path
     selected = report["selector"]["selected_strategy"]
     selected_cost = report["selector"]["candidate_costs"][selected]
 
-    assert report["estimated_tco"]["estimated_tco_eur"] == selected_cost["estimated_tco_eur"]
-    assert report["estimated_tco"]["compute_cost_eur"] == selected_cost["compute_cost_eur"]
+    # Selector TCO and selected_model_tco share the same horizon and components.
+    assert report["selected_model_tco"]["estimated_tco_eur"] == selected_cost["estimated_tco_eur"]
+    assert report["selected_model_tco"]["compute_cost_eur"] == selected_cost["compute_cost_eur"]
+
+    # estimated_tco is deliberately the full selection-run estimate, not just
+    # the selected model's deployment cost; it includes the elapsed selection run.
+    assert report["estimated_tco"] == report["full_selection_run_tco"]
+    assert report["estimated_tco"]["estimated_tco_eur"] >= report["selected_model_tco"]["estimated_tco_eur"]
 
