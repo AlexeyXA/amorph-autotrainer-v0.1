@@ -78,7 +78,7 @@ def test_cli_fails_closed_when_mandatory_label_is_absent(tmp_path, capsys):
         "--out", str(run_dir),
         "--max-runtime-seconds", "300",
         "--max-candidates", "1",
-        "--bootstrap-samples", "50",
+        "--bootstrap-samples", "100",
         "--min-gate-examples-per-class", "5",
         "--min-recall-by-label", "label_that_does_not_exist=0.80",
     ])
