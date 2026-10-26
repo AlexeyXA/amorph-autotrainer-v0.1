@@ -60,5 +60,5 @@ Next action: ...
 
 - Overwrite the full tree without need
 - Treat synthetic demo metrics as production quality
-- Claim monetary TCO minimization (selector is runtime proxy)
+- Do not claim production/default monetary TCO minimization: default remains `runtime_proxy`; draft PR #27 adds opt-in `selection_objective=tco` with explicit-cost-input requirements and a documented limitation that not all challengers are gate-tested before ranking
 - Claim features not in v0.1
