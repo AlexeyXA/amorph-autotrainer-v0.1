@@ -10,6 +10,7 @@ from amorph_autotrainer.cli import main as cli_main
 from amorph_autotrainer.cost import CostConfig
 from amorph_autotrainer.demo import create_demo_csv
 from amorph_autotrainer.metrics import evaluate_task_requirements
+from amorph_autotrainer.pipeline import _validation_candidate_eligibility
 
 
 def test_unconfigured_task_requirements_are_unknown_not_passed():
@@ -92,3 +93,45 @@ def test_cli_fails_closed_when_mandatory_label_is_absent(tmp_path, capsys):
     assert report["business_requirements_passed"] is False
     assert report["task_requirements"]["final_model_validation"]["passed"] is False
     assert report["task_requirements"]["final_model_acceptance_gate"]["passed"] is False
+
+
+def test_task_ineligible_high_macro_f1_does_not_raise_eligibility_threshold():
+    val_metrics = {
+        "aggregate_winner": {"macro_f1": 0.95},
+        "task_compliant": {"macro_f1": 0.90},
+    }
+    task_requirements = {
+        "aggregate_winner": {"passed": False},
+        "task_compliant": {"passed": True},
+    }
+    task_eligible, eligible, threshold, diagnostic = _validation_candidate_eligibility(
+        val_metrics,
+        task_requirements,
+        min_macro_f1=None,
+        noninferiority_margin=0.01,
+    )
+    assert task_eligible == ["task_compliant"]
+    assert eligible == ["task_compliant"]
+    assert threshold == pytest.approx(0.89)
+    assert diagnostic == "task_compliant"
+
+
+def test_no_task_compliant_candidate_stays_ineligible_but_keeps_diagnostic():
+    val_metrics = {
+        "higher_macro": {"macro_f1": 0.95},
+        "lower_macro": {"macro_f1": 0.90},
+    }
+    task_requirements = {
+        "higher_macro": {"passed": False},
+        "lower_macro": {"passed": False},
+    }
+    task_eligible, eligible, threshold, diagnostic = _validation_candidate_eligibility(
+        val_metrics,
+        task_requirements,
+        min_macro_f1=None,
+        noninferiority_margin=0.01,
+    )
+    assert task_eligible == []
+    assert eligible == []
+    assert threshold == pytest.approx(0.94)
+    assert diagnostic == "higher_macro"
