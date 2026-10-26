@@ -40,4 +40,11 @@ The report records `task_requirements.criteria`, `validation_by_candidate`, `sel
 - Passing validation and gate constraints does not establish business suitability unless thresholds and data are representative and were declared before evaluation.
 - Task-specific constraints are quality gates, not a cost model. This PR branch has an opt-in `--selection-objective tco`, which estimates monetary cost from measured fit/latency and declared rates; it is not merged into `main` and does not prove savings. TCO mode must fail closed when candidate-specific usage/fixed costs are unknown; use explicit `0` only when a component is known to be free. Shared costs are reported but do not affect the ranking.
 
+
+## Public-benchmark diagnostic: CLINC150 OOS
+
+The public benchmark workflow currently passes `--min-recall-by-label oos=0.80` **only to the CLINC150 diagnostic run**. The value is a declared guardrail for this run, not a global AMORPH default and not a threshold inferred from the official test. It is evaluated by AMORPH on its internal validation and acceptance-gate partitions; the upstream official test remains report-only.
+
+The CLINC150 official test and the former aggregate-gate result have already been inspected. Re-running this pinned dataset demonstrates whether task-specific acceptance requirements are wired into selection/reporting; it is **not fresh confirmatory scientific evidence** and must not be used to tune the threshold. Confirmation requires a fresh independent holdout, a new suitable dataset revision, or another independent OOS evaluation. The benchmark manifest records the configured task-specific policy, internal status and Proof Gate verdict separately from report-only official-test metrics.
+
 For OOS, fraud, safety, rare incidents or other critical labels, define the operating requirement and collect representative validation/gate examples before making an acceptance claim. If the distribution is expected to shift, a separate independent fresh holdout is needed for confirmatory evidence.
