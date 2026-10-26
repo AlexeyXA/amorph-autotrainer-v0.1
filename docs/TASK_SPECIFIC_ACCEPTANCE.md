@@ -38,6 +38,6 @@ The report records `task_requirements.criteria`, `validation_by_candidate`, `sel
 - A class absent from a validation or gate sample fails closed for a configured recall requirement. That is not the same as estimating its future recall.
 - The same thresholds cannot protect against unrepresented distribution shift, a bad label taxonomy, missing source groups, or semantic near-duplicates that the audit does not find.
 - Passing validation and gate constraints does not establish business suitability unless thresholds and data are representative and were declared before evaluation.
-- The task-specific requirements do not calculate money TCO. The selector still minimizes runtime proxy rather than monetary cost.
+- Task-specific constraints are quality gates, not a cost model. This PR branch has an opt-in `--selection-objective tco`, which estimates monetary cost from measured fit/latency and declared rates; it is not merged into `main` and does not prove savings. TCO mode must fail closed when candidate-specific usage/fixed costs are unknown; use explicit `0` only when a component is known to be free. Shared costs are reported but do not affect the ranking.
 
 For OOS, fraud, safety, rare incidents or other critical labels, define the operating requirement and collect representative validation/gate examples before making an acceptance claim. If the distribution is expected to shift, a separate independent fresh holdout is needed for confirmatory evidence.
