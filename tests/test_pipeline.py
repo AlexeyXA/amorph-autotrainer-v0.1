@@ -372,3 +372,29 @@ def test_tco_candidate_selector_fails_closed_for_unknown_strategy_costs():
     else:
         raise AssertionError("TCO selector must fail closed for unknown candidate cost components")
 
+
+def test_final_tco_report_matches_selector_including_preprocessing_cost(tmp_path):
+    data_path = create_demo_csv(tmp_path / "tco-report.csv", examples_per_class=30)
+    result = run_training(
+        csv_path=data_path,
+        output_dir=tmp_path / "runs-tco-report",
+        strategies=["tfidf"],
+        config=CostConfig(
+            max_runtime_seconds=300,
+            max_candidates=1,
+            expected_queries=100,
+            selection_objective="tco",
+            compute_eur_per_hour=10.0,
+            strategy_usage_cost_eur_per_query={"tfidf": 0.0},
+            strategy_fixed_cost_eur={"tfidf": 0.0},
+            bootstrap_samples=100,
+            min_gate_examples_per_class=5,
+        ),
+    )
+    report = json.loads(Path(result["report_path"]).read_text(encoding="utf-8"))
+    selected = report["selector"]["selected_strategy"]
+    selected_cost = report["selector"]["candidate_costs"][selected]
+
+    assert report["estimated_tco"]["estimated_tco_eur"] == selected_cost["estimated_tco_eur"]
+    assert report["estimated_tco"]["compute_cost_eur"] == selected_cost["compute_cost_eur"]
+
