@@ -83,6 +83,7 @@ def test_cli_fails_closed_when_mandatory_label_is_absent(tmp_path, capsys):
         "--min-recall-by-label", "label_that_does_not_exist=0.80",
     ])
     captured = capsys.readouterr()
+    assert captured.out, captured.err
     payload = json.loads(captured.out)
     assert code == 5
     assert payload["business_requirements_passed"] is False
