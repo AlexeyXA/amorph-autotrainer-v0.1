@@ -109,6 +109,40 @@ def _validate_strategy_names(names: list[str]) -> list[str]:
     return cleaned
 
 
+
+def _validation_candidate_eligibility(
+    val_metrics: dict[str, dict[str, Any]],
+    task_requirements: dict[str, dict[str, Any]],
+    *,
+    min_macro_f1: float | None,
+    noninferiority_margin: float,
+) -> tuple[list[str], list[str], float, str]:
+    """Return task-eligible names, quality-eligible names, threshold, diagnostic name.
+
+    Candidates that fail a mandatory task requirement must not set the aggregate
+    Macro-F1 reference threshold for candidates that satisfy those requirements.
+    If none satisfies the task requirements, return no eligible candidates and
+    the best aggregate candidate solely for diagnosis.
+    """
+    if not val_metrics:
+        raise ValueError("Validation eligibility requires at least one candidate")
+    task_eligible = [
+        name for name in val_metrics
+        if task_requirements[name].get("passed") is not False
+    ]
+    reference_names = task_eligible or list(val_metrics)
+    best_reference_f1 = max(float(val_metrics[name]["macro_f1"]) for name in reference_names)
+    threshold = (
+        best_reference_f1 - noninferiority_margin
+        if min_macro_f1 is None else min_macro_f1
+    )
+    eligible = [
+        name for name in task_eligible
+        if float(val_metrics[name]["macro_f1"]) >= threshold
+    ]
+    diagnostic_name = max(reference_names, key=lambda name: float(val_metrics[name]["macro_f1"]))
+    return task_eligible, eligible, float(threshold), diagnostic_name
+
 def run_training(
     *,
     csv_path: str | Path,
@@ -306,25 +340,23 @@ def run_training(
     if "tfidf" not in candidates:
         raise RuntimeError("Required TF-IDF baseline is missing after conformance checks")
 
-    best_val_f1 = max(m["macro_f1"] for m in val_metrics.values())
-    if config.min_macro_f1 is None:
-        threshold = best_val_f1 - config.noninferiority_margin
-    else:
-        threshold = config.min_macro_f1
-
-    eligible = [
-        name for name, met in val_metrics.items()
-        if met["macro_f1"] >= threshold
-        and validation_task_requirements[name].get("passed") is not False
-    ]
+    task_eligible_candidates, eligible, threshold, diagnostic_candidate = _validation_candidate_eligibility(
+        val_metrics,
+        validation_task_requirements,
+        min_macro_f1=config.min_macro_f1,
+        noninferiority_margin=config.noninferiority_margin,
+    )
     validation_eligible_candidates = list(eligible)
     validation_eligible_challengers = [name for name in validation_eligible_candidates if name != "tfidf"]
-    selection_rule = "cheapest runtime proxy among validation candidates meeting threshold"
+    selection_rule = "cheapest runtime proxy among task-eligible validation candidates meeting threshold"
     if not eligible:
-        # No method meets target: do not hide the failure; keep the best validation candidate
-        # for final diagnosis, but the global quality gate will fail.
-        eligible = [max(val_metrics, key=lambda name: val_metrics[name]["macro_f1"])]
-        selection_rule = "no candidate met threshold; best validation candidate selected for diagnosis"
+        # No candidate is eligible for acceptance. Retain a diagnostic candidate,
+        # preferring those that satisfy mandatory task requirements.
+        eligible = [diagnostic_candidate]
+        if not task_eligible_candidates:
+            selection_rule = "no candidate met mandatory task requirements; best aggregate candidate selected for diagnosis only"
+        else:
+            selection_rule = "no task-eligible candidate met aggregate threshold; best task-eligible candidate selected for diagnosis only"
 
     # Runtime proxy is used even when free compute has a 0 EUR price.
     def runtime_proxy(name: str) -> float:
