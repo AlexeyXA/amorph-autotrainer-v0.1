@@ -127,6 +127,17 @@ def _choose_candidate_by_objective(
     """
     if not eligible_names:
         raise ValueError("At least one candidate is required for selection")
+    if config.selection_objective == "tco":
+        usage_map = config.strategy_usage_cost_eur_per_query or {}
+        fixed_map = config.strategy_fixed_cost_eur or {}
+        missing_usage = [name for name in eligible_names if name not in usage_map]
+        missing_fixed = [name for name in eligible_names if name not in fixed_map]
+        if missing_usage or missing_fixed:
+            raise ValueError(
+                "TCO selection requires explicit per-strategy usage and fixed-cost inputs; "
+                f"missing usage rates={missing_usage}, missing fixed costs={missing_fixed}. "
+                "Unknown cost components fail closed; use explicit 0.0 only for known-free components."
+            )
     costs: dict[str, dict[str, Any]] = {}
     for name in eligible_names:
         if name not in fit_seconds_by_strategy or name not in inference_seconds_per_query_by_strategy:
@@ -189,35 +200,15 @@ def _choose_candidate_by_objective(
             "human_eur_per_hour": config.human_eur_per_hour,
         },
         "interpretation": (
-            "TCO is an estimate from supplied rates, expected query volume and fit/latency measurements. "
-            "Unspecified strategy-specific components are treated as zero unless the zero-rate TCO mode "
-            "requires explicit per-strategy inputs. If candidate TCO ties, runtime proxy is only a tie-breaker. "
+            "TCO is an estimate from supplied rates, expected query volume and fit/latency measurements, not observed billing or a guaranteed full economic cost. "
+            "TCO selection requires explicit per-strategy usage and fixed-cost inputs; explicit zero means the owner declares that component free. "
+            "Zero compute rate means compute is assumed free; shared fixed costs are reported but cancel out of candidate ranking. If candidate TCO ties, runtime proxy is only a tie-breaker. "
             + (
                 "No candidate met validation requirements; this ranking is diagnostic only and is not a quality-eligible selection. "
                 if diagnostic_only else ""
             )
         ),
     }
-    if config.selection_objective == "tco" and config.compute_eur_per_hour > 0:
-        missing_components = {
-            name: [
-                component for component, mapping in (
-                    ("strategy_usage_cost_eur_per_query", config.strategy_usage_cost_eur_per_query or {}),
-                    ("strategy_fixed_cost_eur", config.strategy_fixed_cost_eur or {}),
-                )
-                if name not in mapping
-            ]
-            for name in eligible_names
-        }
-        if any(missing_components.values()):
-            selector_report["assumed_zero_strategy_components"] = {
-                name: components for name, components in missing_components.items() if components
-            }
-            selector_report["warning"] = (
-                "One or more strategy-specific usage/setup cost components were not supplied and are treated as zero. "
-                "With only a uniform compute rate and shared costs, ranking is mathematically equivalent to runtime proxy; "
-                "supply differing candidate-specific rates when applicable."
-            )
     return selected_name, selector_report
 
 
@@ -247,17 +238,17 @@ def run_training(
     strategy_names = strategy_names[:config.max_candidates]
     if "tfidf" not in strategy_names:
         strategy_names = ["tfidf"] + strategy_names[:-1]
-    if config.selection_objective == "tco" and config.compute_eur_per_hour == 0:
+    if config.selection_objective == "tco":
         usage_map = config.strategy_usage_cost_eur_per_query or {}
         fixed_map = config.strategy_fixed_cost_eur or {}
         missing_usage = [name for name in strategy_names if name not in usage_map]
         missing_fixed = [name for name in strategy_names if name not in fixed_map]
         if missing_usage or missing_fixed:
             raise ValueError(
-                "selection_objective='tco' with compute_eur_per_hour=0 requires explicit "
+                "selection_objective='tco' requires explicit "
                 "strategy_usage_cost_eur_per_query and strategy_fixed_cost_eur entries for every "
                 f"requested strategy; missing usage rates={missing_usage}, missing fixed costs={missing_fixed}. "
-                "An explicit 0.0 is allowed when a component is genuinely free."
+                "Unknown cost components fail closed; an explicit 0.0 is allowed only when a component is genuinely free."
             )
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
