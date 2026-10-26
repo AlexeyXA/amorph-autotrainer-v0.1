@@ -945,7 +945,8 @@ def run_training(
         "test_split_used_for_selection": False,
         "status": final_status,
         "estimated_tco": estimate_tco_eur(
-            fit_seconds=final_candidate.fit_seconds,
+            # Include shared preprocessing/data/split cost exactly as the selector does.
+            fit_seconds=preprocessing_seconds + final_candidate.fit_seconds,
             inference_seconds_per_query=final_candidate.latency_seconds_per_example,
             config=config,
             strategy_name=final_name,
