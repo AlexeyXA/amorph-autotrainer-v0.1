@@ -1,13 +1,31 @@
 # AMORPH AutoTrainer — public real-task verification
 
-**Date:** 2026-10-24  
-**Latest successful workflow with exact-text overlap diagnostics:** [GitHub Actions #40080734847](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/40080734847)  
-**Code revision used:** `8206499af4b4a76a28145559bd6aff2b71f72778`  
-**Artifacts (report/provenance/manifests + candidate models; no raw CSVs uploaded):** BANKING77 [artifact 12554967252](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/40080734847/artifacts/12554967252), CLINC150 [artifact 12554893973](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/40080734847/artifacts/12554893973), MASSIVE ru-RU [artifact 12555495686](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/40080734847/artifacts/12555495686). No raw CSVs were uploaded.
+**Baseline audit date:** 2026-10-24  
+**Latest successful public benchmark + provenance regression run (2026-10-26):** [GitHub Actions #40279920378](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/40279920378)  
+**Latest code revision:** `cb8c8eb7e626771d2c32f1ff09572e51f8d30a12`  
+**Historical exact-text-overlap baseline:** workflow [#40080734847](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/40080734847), source SHA `8206499af4b4a76a28145559bd6aff2b71f72778`.  
+**Latest artifacts (report/provenance/manifests + candidate models; no raw CSVs uploaded):** BANKING77 [artifact 12631747967](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/40279920378/artifacts/12631747967), digest `sha256:48c41dd52139e602511515c2acfa57d9caed5edea2f866add9b52f9ed3246f51`; CLINC150 [artifact 12631977679](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/40279920378/artifacts/12631977679), digest `sha256:d89b4872f8241efd791578676d4c97e15f5702a6dfe34248fcb508865abf060b`; MASSIVE ru-RU [artifact 12631832811](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/40279920378/artifacts/12631832811), digest `sha256:2b4bacc019e82e6c639f84c0d66b772bca745cd22a8f08624279eec1995962d0`.  
+**Latest compact result table:** [`public_task_benchmark_results_2026-10-26.csv`](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/blob/research/real-task-verification-20261024/data/public_task_benchmark_results_2026-10-26.csv). No raw CSVs were uploaded.
 
 ## Scope and result in one paragraph
 
-Three public labelled classification tasks were run through AMORPH's current TF-IDF / E5 pipeline on CPU using fixed seeds and pinned sources. The latest successful workflow is #40080734847 on source SHA `8206499af4b4a76a28145559bd6aff2b71f72778`. BANKING77 and MASSIVE ru-RU selected TF-IDF; their Proof Gate is `INCONCLUSIVE / SELF_COMPARISON`, because there was no validation-eligible challenger. CLINC150 selected E5 and passed the configured Proof Gate with `ACCEPT` and legacy parity `match`, **but its official-test out-of-scope (OOS) recall is only 3.9%**. This is a material counterexample to treating the aggregate ACCEPT as sufficient for every requirement. These are public benchmark results, **not owner-domain proof or proof of economic savings**. Cost rates were zero/assumed-free and the selector still uses runtime proxy, not monetary TCO.
+The latest full public run is workflow #40279920378 on source SHA `cb8c8eb7e626771d2c32f1ff09572e51f8d30a12`; all three matrix jobs completed successfully and each produced an artifact. BANKING77 and MASSIVE ru-RU selected the TF-IDF baseline, with Proof Gate `INCONCLUSIVE / SELF_COMPARISON`. In CLINC150, E5's aggregate Proof Gate still returns `ACCEPT`, but the explicit diagnostic constraint `min_recall_by_label[oos]=0.80` fails on validation (recall 0.20, support 15) and the gate (recall 0.20, support 25). Therefore the final model is TF-IDF as a diagnostic fallback, the selector has no validation-eligible candidate, and the internal run status is `task_requirements_not_met` with `business_requirements_passed=false`. This is the intended distinction between aggregate statistical acceptance and a mandatory task requirement. The CLINC official-test OOS recall remains 10.2% for TF-IDF and 3.9% for E5; that test was already inspected and is report-only, so this is regression/wiring evidence, **not fresh confirmatory evidence**. These public runs do not prove owner-domain suitability or money savings; the selector remains `runtime_proxy`, not monetary TCO.
+
+## Latest provenance regression run — 2026-10-26
+
+The workflow above ran exactly on the current Draft PR #27 head and completed successfully. The `execution_manifest.json` files were checked inside all three downloaded artifact ZIPs, and their GitHub-reported archive digests were independently matched against local SHA-256 hashes.
+
+| Dataset | Artifact | Internal status | Proof Gate / task contract | Business requirement | Runtime |
+|---|---|---|---|---|---:|
+| BANKING77 | [12631747967](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/40279920378/artifacts/12631747967) | `baseline_self_comparison` | `INCONCLUSIVE / SELF_COMPARISON`; only TF-IDF validation-eligible | Not configured (`null`) | 95 s |
+| CLINC150 | [12631977679](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/40279920378/artifacts/12631977679) | `task_requirements_not_met` | Pre-gate E5 `ACCEPT`; OOS recall floor fails on validation and gate; final TF-IDF diagnostic fallback | `false` | 168 s |
+| MASSIVE ru-RU | [12631832811](https://github.com/AlexeyXA/amorph-autotrainer-v0.1/actions/runs/40279920378/artifacts/12631832811) | `baseline_self_comparison` | `INCONCLUSIVE / SELF_COMPARISON`; only TF-IDF validation-eligible | Not configured (`null`) | 89 s |
+
+For MASSIVE ru-RU, this run specifically verifies the workflow manifest fix: the result JSON stores the pipeline object under `internal_amorph_run`, whereas the generic BANKING77/CLINC runner uses `internal_run`. The previous workflow extracted status only from `internal_run`, silently losing the MASSIVE Proof Gate and internal status. The current manifest correctly records `proofgate_verdict=INCONCLUSIVE`, `internal_run_status=baseline_self_comparison` and `business_requirements_passed=null`. Unknown/not-configured criteria remain null rather than becoming success.
+
+Archive SHA-256 values: BANKING77 `48c41dd52139e602511515c2acfa57d9caed5edea2f866add9b52f9ed3246f51`; CLINC150 `d89b4872f8241efd791578676d4c97e15f5702a6dfe34248fcb508865abf060b`; MASSIVE ru-RU `2b4bacc019e82e6c639f84c0d66b772bca745cd22a8f08624279eec1995962d0`. The compact CSV is pinned to run #40279920378 and source SHA `cb8c8eb7e626771d2c32f1ff09572e51f8d30a12`.
+
+This rerun uses the same previously inspected public dataset revisions and official tests. It checks reproducibility, guard behavior and provenance fields; it must not be described as an independent confirmation of generalization or business performance.
 
 ## Results
 
@@ -16,7 +34,7 @@ Validation numbers are the AMORPH internal validation splits created only from e
 | Dataset | Raw official train / test | Internal validation Macro-F1 (TF-IDF / E5) | Selected | Proof Gate | Official test (TF-IDF) | Official test (E5) |
 |---|---:|---:|---|---|---|---|
 | BANKING77 | 10,003 / 3,080; 77 classes | 0.8630 / 0.7809 | TF-IDF | INCONCLUSIVE / SELF_COMPARISON | Acc 0.8620; Macro-F1 0.8607 | Acc 0.7903; Macro-F1 0.7660 |
-| CLINC150 + OOS class | 15,100 / 5,500; 151 classes | 0.9072 / 0.9307 | E5 | **ACCEPT**, parity match | Acc 0.7456; Macro-F1 0.8142 | Acc 0.7542; Macro-F1 0.8244 |
+| CLINC150 + OOS class | 15,100 / 5,500; 151 classes | 0.9072 / 0.9307 | TF-IDF (diagnostic fallback; no eligible candidate) | E5 aggregate Proof Gate **ACCEPT**, but mandatory OOS guard **FAIL**; final status `task_requirements_not_met` | Acc 0.7456; Macro-F1 0.8142 | Acc 0.7542; Macro-F1 0.8244 |
 | MASSIVE ru-RU | 11,387 prepared train / 2,974 test; 56 train labels, 59 test labels | 0.4517 / 0.2739 | TF-IDF | INCONCLUSIVE / SELF_COMPARISON | Acc 0.6214; fixed-train-label Macro-F1 0.4716 | Acc 0.5319; fixed-train-label Macro-F1 0.3004 |
 
 ### CLINC150 gate details
