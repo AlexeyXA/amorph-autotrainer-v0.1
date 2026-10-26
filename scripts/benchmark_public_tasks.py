@@ -52,6 +52,28 @@ def write_csv(path: Path, rows: list[dict[str, str]]) -> None:
         writer.writerows(rows)
 
 
+def parse_label_thresholds(values: list[str], *, option_name: str) -> dict[str, float]:
+    """Parse repeated LABEL=THRESHOLD task requirements without silently overwriting duplicates."""
+    import math
+
+    result: dict[str, float] = {}
+    for item in values:
+        label, separator, raw_threshold = item.partition("=")
+        label = label.strip()
+        if not separator or not label or not raw_threshold.strip():
+            raise ValueError(f"{option_name} expects LABEL=THRESHOLD, got {item!r}")
+        if label in result:
+            raise ValueError(f"{option_name} contains duplicate label {label!r}")
+        try:
+            threshold = float(raw_threshold)
+        except ValueError as exc:
+            raise ValueError(f"{option_name} threshold must be numeric for {label!r}") from exc
+        if not math.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
+            raise ValueError(f"{option_name} threshold must be finite and in [0, 1] for {label!r}")
+        result[label] = threshold
+    return result
+
+
 def load_banking77(cache: Path):
     import csv
     import io
@@ -192,7 +214,21 @@ def main() -> int:
     p.add_argument("--max-runtime-seconds", type=float, default=7200)
     p.add_argument("--expected-queries", type=int, default=1000,
                    help="Scenario value for the current runtime proxy, not observed owner volume")
+    p.add_argument(
+        "--min-recall-by-label", action="append", default=[], metavar="LABEL=THRESHOLD",
+        help="Optional task-specific recall floor; repeat for multiple labels",
+    )
+    p.add_argument(
+        "--min-precision-by-label", action="append", default=[], metavar="LABEL=THRESHOLD",
+        help="Optional task-specific precision floor; repeat for multiple labels",
+    )
     args = p.parse_args()
+    min_recall_by_label = parse_label_thresholds(
+        args.min_recall_by_label, option_name="--min-recall-by-label"
+    )
+    min_precision_by_label = parse_label_thresholds(
+        args.min_precision_by_label, option_name="--min-precision-by-label"
+    )
     started = time.perf_counter()
     out = Path(args.output_dir).resolve()
     cache, data = out / "cache", out / "data"
@@ -269,6 +305,8 @@ def main() -> int:
         bootstrap_samples=500,
         min_gate_examples_per_class=5,
         random_seed=42,
+        min_recall_by_label=min_recall_by_label,
+        min_precision_by_label=min_precision_by_label,
     )
     train_result = run_training(
         csv_path=train_csv,
@@ -369,6 +407,15 @@ def main() -> int:
         "dataset_provenance": provenance,
         "environment": {"python": platform.python_version(), "platform": platform.platform()},
         "requested_strategies": strategies,
+        "task_acceptance_policy": {
+            "min_recall_by_label": min_recall_by_label,
+            "min_precision_by_label": min_precision_by_label,
+            "configured": bool(min_recall_by_label or min_precision_by_label),
+            "interpretation": (
+                "Explicit benchmark-run acceptance requirements, evaluated on validation and acceptance-gate samples only; "
+                "they are not global AMORPH defaults and do not use the official test for selection."
+            ),
+        },
         "selected_strategy": train_result.get("selected_strategy"),
         "internal_run": train_result,
         "external_official_test_metrics_by_strategy": metrics,
