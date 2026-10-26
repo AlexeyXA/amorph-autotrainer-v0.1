@@ -5,7 +5,11 @@ from pathlib import Path
 from amorph_autotrainer.cost import CostConfig
 from amorph_autotrainer.cli import main as cli_main
 from amorph_autotrainer.demo import create_demo_csv
-from amorph_autotrainer.pipeline import run_training, _proofgate_may_accept_candidate
+from amorph_autotrainer.pipeline import (
+    run_training,
+    _proofgate_may_accept_candidate,
+    _choose_candidate_by_objective,
+)
 from amorph_autotrainer.strategies import load_strategy_model, predict_loaded
 
 
@@ -296,3 +300,75 @@ def test_tco_mode_accepts_explicit_zero_rates_but_reports_assumed_free_costs(tmp
     assert report["selection_objective"] == "tco"
     assert report["estimated_tco"]["cost_interpretation"]
     assert any("assumed-free" in warning for warning in report["warnings"])
+
+
+def test_tco_mode_requires_explicit_strategy_cost_inputs_even_with_compute_rate(tmp_path, capsys):
+    data_path = create_demo_csv(tmp_path / "tco-partially-priced.csv", examples_per_class=12)
+    output_dir = tmp_path / "runs-partially-priced"
+    code = cli_main([
+        "train", str(data_path), "--out", str(output_dir),
+        "--strategies", "tfidf", "--max-candidates", "1",
+        "--max-runtime-seconds", "300", "--selection-objective", "tco",
+        "--compute-eur-per-hour", "25",
+    ])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "requires explicit" in captured.err
+    assert "missing usage rates=['tfidf']" in captured.err
+    assert "missing fixed costs=['tfidf']" in captured.err
+    assert not output_dir.exists()
+
+
+def test_tco_objective_can_override_runtime_proxy_when_candidate_costs_differ():
+    shared = {
+        "eligible_names": ["tfidf", "e5"],
+        "fit_seconds_by_strategy": {"tfidf": 1.0, "e5": 10.0},
+        "inference_seconds_per_query_by_strategy": {"tfidf": 0.01, "e5": 0.02},
+    }
+    costs = {
+        "strategy_usage_cost_eur_per_query": {"tfidf": 1.0, "e5": 0.0},
+        "strategy_fixed_cost_eur": {"tfidf": 0.0, "e5": 0.0},
+    }
+    runtime_selected, runtime_report = _choose_candidate_by_objective(
+        **shared,
+        config=CostConfig(selection_objective="runtime_proxy", expected_queries=100),
+    )
+    tco_selected, tco_report = _choose_candidate_by_objective(
+        **shared,
+        config=CostConfig(
+            selection_objective="tco", expected_queries=100,
+            compute_eur_per_hour=10.0,
+            **costs,
+        ),
+    )
+
+    assert runtime_selected == "tfidf"
+    assert tco_selected == "e5"
+    assert tco_report["selection_objective"] == "tco"
+    assert tco_report["candidate_tco_values_differ"] is True
+    assert tco_report["candidate_costs"]["e5"]["estimated_tco_eur"] < tco_report["candidate_costs"]["tfidf"]["estimated_tco_eur"]
+    assert runtime_report["selection_objective"] == "runtime_proxy"
+
+
+def test_tco_candidate_selector_fails_closed_for_unknown_strategy_costs():
+    config = CostConfig(
+        selection_objective="tco",
+        expected_queries=100,
+        compute_eur_per_hour=10.0,
+        strategy_usage_cost_eur_per_query={"tfidf": 0.0},
+        strategy_fixed_cost_eur={"tfidf": 0.0},
+    )
+    try:
+        _choose_candidate_by_objective(
+            ["tfidf", "e5"],
+            fit_seconds_by_strategy={"tfidf": 1.0, "e5": 2.0},
+            inference_seconds_per_query_by_strategy={"tfidf": 0.01, "e5": 0.02},
+            config=config,
+        )
+    except ValueError as exc:
+        assert "missing usage rates=['e5']" in str(exc)
+        assert "missing fixed costs=['e5']" in str(exc)
+    else:
+        raise AssertionError("TCO selector must fail closed for unknown candidate cost components")
+
