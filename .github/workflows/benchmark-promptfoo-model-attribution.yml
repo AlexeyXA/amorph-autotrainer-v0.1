@@ -107,9 +107,9 @@ jobs:
               "group_split_column": "group_id == question_id; all four responses to one source question stay together",
               "amorph_run_status": report.get("status"),
               # The root AMORPH report stores the post-gate final strategy as "strategy";
-    # "selected_strategy" is present in the CLI return payload, not the persisted manifest.
-    "selected_strategy": report.get("strategy") or report.get("selected_strategy"),
-    "selected_before_acceptance_gate": report.get("selected_before_acceptance_gate"),
+              # "selected_strategy" is present in the CLI return payload, not the persisted manifest.
+              "selected_strategy": report.get("strategy") or report.get("selected_strategy"),
+              "selected_before_acceptance_gate": report.get("selected_before_acceptance_gate"),
               "selection_objective": report.get("selection_objective"),
               "validation_metrics": report.get("validation_metrics_all_candidates", report.get("validation_metrics")),
               "proofgate": report.get("proofgate"),
