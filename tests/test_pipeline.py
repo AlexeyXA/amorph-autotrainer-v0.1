@@ -320,7 +320,7 @@ def test_aggregate_gate_accept_cannot_override_failed_mandatory_floor(tmp_path, 
     assert report["selected_before_acceptance_gate"] == "e5"
     assert report["proofgate"]["selected_candidate_verdict"] == "ACCEPT"
     assert report["proofgate"]["decision_passed"] is True
-    assert report["proofgate"]["decision_passed_scope"].startswith("aggregate_proofgate_metric_only")
+    assert report["proofgate"]["decision_passed_scope"].startswith("legacy_gate_projection_after_power_and_parity_checks")
     assert report["gate_passed_for_configured_metric"] is True
     assert report["business_requirements_passed"] is False
     assert report["acceptance_gate_comparison"]["final_strategy"] == "tfidf"
