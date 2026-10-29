@@ -991,6 +991,11 @@ def run_training(
         "database_path": str(Path(output_dir) / "experiments.sqlite3"),
         "status": final_status,
         "business_requirements_passed": business_requirements_passed,
+        "gate_passed_for_configured_metric": gate_passed_for_configured_metric,
+        "overall_acceptance_passed": (
+            final_status in {"accepted", "accepted_no_absolute_target"}
+            and business_requirements_passed is not False
+        ),
         "selected_strategy": final_name,
         "selected_before_acceptance_gate": selected_name,
         "validation_metrics": val_metrics,
