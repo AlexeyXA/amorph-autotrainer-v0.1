@@ -1,0 +1,53 @@
+name: Relay explicit GPT comments to Grok Automation
+
+on:
+  issue_comment:
+    types: [created]
+
+# This workflow only reads the triggering event and sends one signed outbound webhook.
+# It does not execute issue content as code and has no GitHub write permissions.
+permissions:
+  contents: read
+
+concurrency:
+  group: grok-webhook-relay-${{ github.event.comment.id }}
+  cancel-in-progress: false
+
+jobs:
+  relay:
+    if: >-
+      github.event.repository.full_name == 'AlexeyXA/amorph-autotrainer-v0.1' &&
+      github.event.issue.number == 1 &&
+      !github.event.issue.pull_request &&
+      github.event.comment.user.login == 'AlexeyXA' &&
+      startsWith(github.event.comment.body, '[GPT]') &&
+      (contains(github.event.comment.body, 'Grok') || contains(github.event.comment.body, 'auto-bridge'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Validate webhook secrets are configured
+        env:
+          GROK_WEBHOOK_URL: ${{ secrets.GROK_AUTOMATION_WEBHOOK_URL }}
+          GROK_WEBHOOK_SECRET: ${{ secrets.GROK_AUTOMATION_WEBHOOK_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$GROK_WEBHOOK_URL" ]] || {
+            echo "::error::Missing Actions secret GROK_AUTOMATION_WEBHOOK_URL. See docs/GROK_AUTOMATION_RELAY.md."
+            exit 1
+          }
+          [[ -n "$GROK_WEBHOOK_SECRET" ]] || {
+            echo "::error::Missing Actions secret GROK_AUTOMATION_WEBHOOK_SECRET. See docs/GROK_AUTOMATION_RELAY.md."
+            exit 1
+          }
+
+      - name: Send signed event to Grok Automation
+        env:
+          GROK_WEBHOOK_URL: ${{ secrets.GROK_AUTOMATION_WEBHOOK_URL }}
+          GROK_WEBHOOK_SECRET: ${{ secrets.GROK_AUTOMATION_WEBHOOK_SECRET }}
+        run: python3 scripts/relay_grok_webhook.py
