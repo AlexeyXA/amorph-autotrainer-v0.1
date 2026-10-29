@@ -527,13 +527,28 @@ def run_training(
     )
     final_validation_task_requirements = validation_task_requirements[final_name]
     task_requirements_configured = bool(config.min_recall_by_label or config.min_precision_by_label)
-    if task_requirements_configured:
-        business_requirements_passed = (
-            final_validation_task_requirements.get("passed") is True
-            and final_task_requirements.get("passed") is True
-        )
+    final_validation_requirements_passed = final_validation_task_requirements.get("passed")
+    final_gate_requirements_passed = final_task_requirements.get("passed")
+    if not task_requirements_configured:
+        business_requirements_passed = None
+    elif final_validation_requirements_passed is False:
+        # A validation-side failure is already sufficient to reject this final
+        # strategy, even if the acceptance gate is also underpowered.
+        business_requirements_passed = False
+    elif not gate_sufficient:
+        # A passing validation result cannot turn an underpowered gate into either
+        # a business pass or a business rejection.
+        business_requirements_passed = None
+    elif final_gate_requirements_passed is False:
+        business_requirements_passed = False
+    elif final_validation_requirements_passed is True and final_gate_requirements_passed is True:
+        business_requirements_passed = True
     else:
         business_requirements_passed = None
+
+    # This describes only the aggregate statistical Proof Gate for its configured
+    # metric. It is deliberately separate from task requirements and final selection.
+    gate_passed_for_configured_metric = selected_proofgate.verdict == Verdict.ACCEPT
 
     final_gate_macro_f1 = final_gate.get("candidate_macro_f1")
     absolute_target_passed = (
@@ -545,7 +560,11 @@ def run_training(
         )
         else float(final_gate_macro_f1) >= config.min_macro_f1
     )
-    if (
+    if business_requirements_passed is False:
+        # Match the CLI exit code: a demonstrated mandatory task failure is a
+        # business rejection; an underpowered gate with passing validation is unknown.
+        final_status = "task_requirements_not_met"
+    elif (
         selected_proofgate.subtype == "CONFORMANCE_FAILED"
         or baseline_proofgate.subtype == "CONFORMANCE_FAILED"
     ):
@@ -556,8 +575,6 @@ def run_training(
         final_status = "acceptance_gate_inconclusive"
     elif proofgate_parity_status == "mismatch":
         final_status = "proofgate_legacy_parity_mismatch"
-    elif business_requirements_passed is False:
-        final_status = "task_requirements_not_met"
     elif selected_name != final_name and (
         selected_validation_task_requirements.get("passed") is False
         or selected_gate_task_requirements.get("passed") is False
@@ -767,6 +784,8 @@ def run_training(
             "baseline_reference_subtype": baseline_proofgate.subtype,
             "baseline_reference_report_sha256": baseline_proofgate_payload["report_sha256"],
             "decision_passed": selected_gate["passed"],
+            "decision_passed_scope": "aggregate_proofgate_metric_only; not overall task acceptance",
+            "gate_passed_for_configured_metric": gate_passed_for_configured_metric,
             "legacy_selected_gate_passed": legacy_selected_gate_passed,
             "legacy_parity_status": proofgate_parity_status,
         },
@@ -790,6 +809,7 @@ def run_training(
             "interpretation": "Per-label rules are separate from aggregate Proof Gate and cover only the supplied validation/gate samples; they do not guarantee future-distribution performance.",
         },
         "business_requirements_passed": business_requirements_passed,
+        "gate_passed_for_configured_metric": gate_passed_for_configured_metric,
         "candidate_errors": candidate_errors,
         "selected_before_acceptance_gate": selected_name,
         "selection_rule": selection_rule,
@@ -820,6 +840,10 @@ def run_training(
         "acceptance_gate_examples_per_class": gate_class_counts,
         "test_split_used_for_selection": False,
         "status": final_status,
+        "overall_acceptance_passed": (
+            final_status in {"accepted", "accepted_no_absolute_target"}
+            and business_requirements_passed is not False
+        ),
         "estimated_tco": estimate_tco_eur(
             fit_seconds=final_candidate.fit_seconds,
             inference_seconds_per_query=final_candidate.latency_seconds_per_example,
