@@ -153,8 +153,9 @@ def deliver(url: str, secret: str, event: dict[str, Any]) -> int:
 
 def main() -> int:
     event_path = os.environ.get("GITHUB_EVENT_PATH")
-    url = os.environ.get("GROK_WEBHOOK_URL", "")
-    secret = os.environ.get("GROK_WEBHOOK_SECRET", "")
+    # Strip whitespace/tabs/newlines that often appear when pasting secrets into GitHub UI.
+    url = os.environ.get("GROK_WEBHOOK_URL", "").strip()
+    secret = os.environ.get("GROK_WEBHOOK_SECRET", "").strip()
     if not event_path:
         print("::error::GITHUB_EVENT_PATH is missing.", file=sys.stderr)
         return 2
