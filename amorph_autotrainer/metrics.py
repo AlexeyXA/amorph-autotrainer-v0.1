@@ -59,11 +59,14 @@ def evaluate_task_requirements(
     metrics_by_label: dict[str, dict[str, Any]] = {}
     index_by_label = {label: i for i, label in enumerate(all_labels)}
     for label, i in index_by_label.items():
+        predicted_support = int(np.count_nonzero(pred_labels == label))
         metrics_by_label[label] = {
-            "precision": float(precision[i]),
-            "recall": float(recall[i]),
+            # Precision is undefined when the model predicts no examples of this
+            # class. Do not let sklearn's zero_division=0 masquerade as a measured 0.
+            "precision": float(precision[i]) if predicted_support > 0 else None,
+            "recall": float(recall[i]) if support[i] > 0 else None,
             "true_support": int(support[i]),
-            "predicted_support": int(np.count_nonzero(pred_labels == label)),
+            "predicted_support": predicted_support,
         }
 
     checks: list[dict[str, Any]] = []
@@ -90,7 +93,7 @@ def evaluate_task_requirements(
     for label, threshold in sorted(precision_requirements.items()):
         metric = metrics_by_label[label]
         observed = metric["precision"]
-        passed = observed >= float(threshold)
+        passed = observed is not None and observed >= float(threshold)
         check = {
             "metric": "precision",
             "label": label,
@@ -102,7 +105,10 @@ def evaluate_task_requirements(
         }
         checks.append(check)
         if not passed:
-            reasons.append("minimum_precision_not_met")
+            reasons.append(
+                "required_label_never_predicted" if observed is None
+                else "minimum_precision_not_met"
+            )
 
     return {
         "configured": True,
