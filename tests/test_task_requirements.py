@@ -63,6 +63,24 @@ def test_precision_floor_is_independent_of_recall_floor():
     assert "minimum_precision_not_met" in result["reasons"]
 
 
+def test_precision_is_unknown_when_required_label_is_never_predicted():
+    result = evaluate_task_requirements(
+        np.asarray(["pay", "bug", "pay", "bug"]),
+        np.asarray(["pay", "bug", "pay", "bug"]),
+        min_precision_by_label={"out_of_scope": 0.8},
+    )
+    check = next(
+        item for item in result["checks"]
+        if item["metric"] == "precision" and item["label"] == "out_of_scope"
+    )
+    assert check["observed"] is None
+    assert check["predicted_support"] == 0
+    assert check["passed"] is False
+    assert result["metrics_by_label"]["out_of_scope"]["precision"] is None
+    assert "required_label_never_predicted" in result["reasons"]
+    assert "minimum_precision_not_met" not in result["reasons"]
+
+
 def test_task_requirement_thresholds_must_be_finite_and_in_unit_interval():
     with pytest.raises(ValueError, match=r"in \[0, 1\]"):
         CostConfig(min_recall_by_label={"out_of_scope": 1.1}).validate()
@@ -93,6 +111,32 @@ def test_cli_fails_closed_when_mandatory_label_is_absent(tmp_path, capsys):
     assert report["business_requirements_passed"] is False
     assert report["task_requirements"]["final_model_validation"]["passed"] is False
     assert report["task_requirements"]["final_model_acceptance_gate"]["passed"] is False
+
+
+def test_underpowered_gate_is_unknown_not_business_rejection(tmp_path, capsys):
+    csv_path = create_demo_csv(tmp_path / "small-underpowered.csv", examples_per_class=12)
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        labels = sorted({row["label"] for row in __import__("csv").DictReader(handle)})
+    output_dir = tmp_path / "underpowered-runs"
+    code = cli_main([
+        "train", str(csv_path),
+        "--strategies", "tfidf",
+        "--out", str(output_dir),
+        "--max-runtime-seconds", "300",
+        "--max-candidates", "1",
+        "--bootstrap-samples", "100",
+        "--min-gate-examples-per-class", "20",
+        "--min-recall-by-label", f"{labels[0]}=0.0",
+    ])
+    captured = capsys.readouterr()
+    assert captured.out, captured.err
+    payload = json.loads(captured.out)
+    report = json.loads(Path(payload["report_path"]).read_text(encoding="utf-8"))
+    assert code == 4
+    assert report["status"] == "acceptance_gate_underpowered"
+    assert report["business_requirements_passed"] is None
+    assert report["gate_passed_for_configured_metric"] is False
+    assert report["overall_acceptance_passed"] is False
 
 
 def test_task_ineligible_high_macro_f1_does_not_raise_eligibility_threshold():
