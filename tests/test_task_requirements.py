@@ -126,6 +126,7 @@ def test_underpowered_gate_is_unknown_not_business_rejection(tmp_path, capsys):
         "--max-candidates", "1",
         "--bootstrap-samples", "100",
         "--min-gate-examples-per-class", "20",
+        "--max-near-duplicate-audit-rows", "1",
         "--min-recall-by-label", f"{labels[0]}=0.0",
     ])
     captured = capsys.readouterr()
