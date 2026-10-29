@@ -1,74 +1,59 @@
-# Agent collaboration protocol (Grok ↔ GPT)
+# AGENTS.md — Grok as GitHub agent
 
-This repository is used by the owner **AlexeyXA** with AI assistants connected via **GitHub plugins** (Grok, ChatGPT).
+**Owner decision:** primary agent is **Grok only** (single-agent mode).
 
-## Shared channel (bidirectional mailbox)
+## Who does what
 
-**Issue #1:** https://github.com/AlexeyXA/amorph-autotrainer-v0.1/issues/1  
-**Bridge state:** https://github.com/AlexeyXA/grok-gpt-bridge (`.ai/STATE.md`, `.ai/HANDOFF.md`, `AGENTS.md`)
+| Role | Who |
+|------|-----|
+| GitHub agent (issues, PR review notes, CI diagnosis, docs) | **Grok** |
+| Product decisions, merge, secrets, domain data | **Owner (AlexeyXA)** |
+| ChatGPT | Optional manual tool for Owner — not part of automations |
 
-| Direction | How |
-|-----------|-----|
-| **GPT → Grok** | Comment with `[GPT]` and `Grok` or `auto-bridge` → Actions webhook relay → Grok Automation posts `[Grok]` |
-| **Grok → GPT** | Grok posts `[Grok]` here and updates bridge STATE/HANDOFF. GPT **must** read Issue #1 + bridge state at session start |
+## How to call the agent
 
-Not a shared realtime chat runtime. No free wake-up of an open ChatGPT browser tab.
+1. **This Grok chat** — fastest (tools: GitHub, code, Actions).
+2. **Issue comment** on `AlexeyXA/amorph-autotrainer-v0.1` — write a clear ask (e.g. «Grok, проверь CI», «/agent статус»). Automation `github-agent-issue-comment` may reply with `[Grok]`.
+3. **Open a non-draft PR** — Automation `github-agent-pr-opened` posts a review summary.
+4. **CI failure on the repo** — Automation `github-agent-ci-failure` diagnoses (skips relay test noise).
 
-Prefix every agent comment: `[Grok]` or `[GPT]`.
+Prefix agent replies: `[Grok]`.
 
-## Role division
+## Automations (Grok)
 
-| Role | Owner | Responsibilities |
-|------|--------|------------------|
-| **Architecture / protocol** | **Grok** | Priorities, honesty of claims, RFC/docs, review of PR scope, merge on owner request, unblock stuck agents |
-| **Implementation** | **GPT** | Code PRs, unit tests, CI green, Actions/MASSIVE execution reports, small sequential commits |
-| **Product decisions** | **Owner (AlexeyXA)** | Defaults (E5), merge authority, domain datasets, secrets, “ready for my use” |
+| Name | Trigger |
+|------|---------|
+| `github-agent-issue-comment` | issue_comment on amorph-autotrainer-v0.1 |
+| `github-agent-pr-opened` | PR opened / ready for review |
+| `github-agent-ci-failure` | workflow_run failure |
+| `amorph-gpt-webhook-relay` | legacy webhook (optional GPT path) |
+| `amorph-issue1-comment-bridge` | paused |
 
-### GPT current track
-1. Follow bridge STATE/HANDOFF before coding
-2. Proof Gate / readiness work as in open PRs — do not expand embedder zoo without owner
-3. Do **not** merge draft experiments into production defaults without owner
+Native GitHub event delivery can lag or drop; for urgent work use **this chat**.
 
-### Grok current track
-- Protocol, claim honesty, relay health, review on request
-- Keep native duplicate Automation paused while webhook path is active
+## Hard rules
 
-### Anti-stuck
-If blocked >2 hours: comment `[Agent] Blocked: <reason>` on issue #1.
-
-## Conventions
-
-| Item | Rule |
-|------|------|
-| Branch | Feature branches + PR; no force-push to `main` unless owner asks |
-| Commits | Small, clear messages |
-| User language | Russian by default in issue comments to owner |
-| Scope v0.1 | Classification + features (TF-IDF, optional E5, experimental hybrid); no RAG/LoRA claims |
+- No merge unless Owner explicitly says merge/смержи on that thread.
+- No secrets in git or issue bodies.
+- No false claims (TCO money, SOTA, 24/7 SLA).
+- Scope v0.1: classification + features (TF-IDF, optional E5, experimental hybrid).
+- Feature branches + PR; small commits.
 
 ## Comment template
 
 ```text
-[AgentName] Status: ...
+[Grok] YYYY-MM-DD
 Goal: ...
 Done: ...
-Evidence: ...
-Blocked: ...
+Evidence: links
+Risks: ...
 Next action: ...
-Owner decision needed: ...
+Owner decision needed: yes/no
 ```
 
-## Project pointers
+## Pointers
 
-- Install: `pip install -e ".[test]"` (E5: `.[embeddings]`)
+- Issue channel: https://github.com/AlexeyXA/amorph-autotrainer-v0.1/issues/1
+- Bridge state (optional): https://github.com/AlexeyXA/grok-gpt-bridge
 - Tests: `pytest -q`
-- Proof Gate CLI: `python -m amorph_autotrainer.proofgate --help`
-- Docs: `README_RU.md`, `docs/PROOFGATE_PLAN.md`, `docs/READINESS.md`
-- Relay docs: `docs/GROK_AUTOMATION_RELAY.md`
-
-## Do not
-
-- Overwrite the full tree without need
-- Treat synthetic demo metrics as production quality
-- Claim monetary TCO minimization (selector is runtime proxy)
-- Claim features not in v0.1
-- Claim 24/7 dual-agent runtime without evidence
+- Install: `pip install -e ".[test]"`
