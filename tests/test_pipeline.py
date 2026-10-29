@@ -2,11 +2,48 @@ import csv
 import json
 from pathlib import Path
 
+import numpy as np
+import amorph_autotrainer.pipeline as pipeline_module
+
 from amorph_autotrainer.cost import CostConfig
 from amorph_autotrainer.cli import main as cli_main
 from amorph_autotrainer.demo import create_demo_csv
 from amorph_autotrainer.pipeline import run_training, _proofgate_may_accept_candidate
-from amorph_autotrainer.strategies import load_strategy_model, predict_loaded
+from amorph_autotrainer.strategies import (
+    E5Candidate,
+    FittedCandidate,
+    TfidfCandidate,
+    load_strategy_model,
+    predict_loaded,
+)
+
+
+class _ConstantPredictor:
+    def __init__(self, label):
+        self.label = label
+
+    def predict(self, texts):
+        return np.asarray([self.label] * len(texts))
+
+
+class _TextIdEncoder:
+    def __init__(self, text_to_id):
+        self.text_to_id = text_to_id
+
+
+class _IdToLabelClassifier:
+    def __init__(self, id_to_label, target_label, wrong_label, gate_target_ids):
+        self.id_to_label = id_to_label
+        self.target_label = target_label
+        self.wrong_label = wrong_label
+        self.gate_target_ids = set(gate_target_ids)
+
+    def predict(self, features):
+        ids = np.asarray(features).reshape(-1).astype(int)
+        return np.asarray([
+            self.wrong_label if item in self.gate_target_ids else self.id_to_label[item]
+            for item in ids
+        ])
 
 
 def test_proofgate_cutover_accepts_only_verified_real_challengers():
@@ -191,6 +228,105 @@ def test_cli_exit_code_4_when_acceptance_gate_is_underpowered(tmp_path, capsys):
     assert proofgate_report["subtype"] == "UNDERPOWERED"
     assert proofgate_report["comparison"] is None
     assert report["selected_candidate_gate"]["passed"] is False
+
+
+def test_aggregate_gate_accept_cannot_override_failed_mandatory_floor(tmp_path, monkeypatch):
+    data_path = create_demo_csv(tmp_path / "gate-conflict.csv", examples_per_class=50)
+    with data_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        label_by_text = {
+            row["text"]: row["label"] for row in csv.DictReader(handle)
+        }
+    labels = sorted(set(label_by_text.values()))
+    assert len(labels) >= 2
+    target_label, wrong_label = labels[0], labels[1]
+    text_to_id = {text: idx for idx, text in enumerate(label_by_text)}
+    id_to_label = {idx: label_by_text[text] for text, idx in text_to_id.items()}
+    split_capture = {}
+    original_split_records = pipeline_module.split_records
+
+    def capture_split_records(*args, **kwargs):
+        bundle = original_split_records(*args, **kwargs)
+        split_capture["gate_texts"] = set(bundle.gate_texts)
+        return bundle
+
+    monkeypatch.setattr(pipeline_module, "split_records", capture_split_records)
+
+    def fake_tfidf_fit(cls, train_texts, train_labels, val_texts):
+        model = _ConstantPredictor(wrong_label)
+        return FittedCandidate(
+            name="tfidf", model=model, fit_seconds=0.01,
+            val_predict_seconds=0.001, latency_seconds_per_example=0.0001,
+            val_pred=model.predict(val_texts),
+            metadata={"feature_type": "test_constant_predictor"},
+        )
+
+    def fake_e5_fit(
+        cls, train_texts, train_labels, val_texts, model_id=None,
+        model_revision=None, classifier_c=1.0, class_weight=None,
+    ):
+        gate_target_ids = {
+            text_to_id[text] for text in split_capture["gate_texts"]
+            if label_by_text[text] == target_label
+        }
+        encoder = _TextIdEncoder(text_to_id)
+        classifier = _IdToLabelClassifier(
+            id_to_label, target_label, wrong_label, gate_target_ids
+        )
+        model = {
+            "classifier": classifier,
+            "encoder": encoder,
+            "model_id": model_id or cls.model_id,
+            "model_revision": model_revision or cls.default_model_revision,
+            "classifier_c": float(classifier_c),
+            "class_weight": class_weight,
+        }
+        val_features = np.asarray([[text_to_id[text]] for text in val_texts], dtype=float)
+        val_pred = classifier.predict(val_features)
+        return FittedCandidate(
+            name="e5", model=model, fit_seconds=0.02,
+            val_predict_seconds=0.001, latency_seconds_per_example=0.0002,
+            val_pred=val_pred,
+            metadata={
+                "feature_type": "synthetic_test_embeddings",
+                "model_id": model["model_id"],
+                "model_revision": model["model_revision"],
+                "classifier_C": float(classifier_c),
+                "classifier_class_weight": class_weight,
+                "encoder_load_seconds": 0.0,
+                "feature_extraction_seconds": 0.0,
+                "embedding_dim": 1,
+            },
+        )
+
+    def fake_encode(encoder, texts):
+        return np.asarray([[encoder.text_to_id[text]] for text in texts], dtype=float)
+
+    monkeypatch.setattr(TfidfCandidate, "fit", classmethod(fake_tfidf_fit))
+    monkeypatch.setattr(E5Candidate, "fit", classmethod(fake_e5_fit))
+    monkeypatch.setattr(E5Candidate, "_encode", staticmethod(fake_encode))
+
+    result = run_training(
+        csv_path=data_path,
+        output_dir=tmp_path / "runs",
+        strategies=["tfidf", "e5"],
+        config=CostConfig(
+            max_runtime_seconds=300, max_candidates=2, expected_queries=10,
+            bootstrap_samples=100, min_gate_examples_per_class=5,
+            min_recall_by_label={target_label: 0.9},
+        ),
+    )
+    report = json.loads(Path(result["report_path"]).read_text(encoding="utf-8"))
+
+    assert report["selected_before_acceptance_gate"] == "e5"
+    assert report["proofgate"]["selected_candidate_verdict"] == "ACCEPT"
+    assert report["proofgate"]["decision_passed"] is True
+    assert report["proofgate"]["decision_passed_scope"].startswith("aggregate_proofgate_metric_only")
+    assert report["gate_passed_for_configured_metric"] is True
+    assert report["business_requirements_passed"] is False
+    assert report["selected_strategy"] == "tfidf"
+    assert report["status"] == "task_requirements_not_met"
+    assert report["overall_acceptance_passed"] is False
+    assert report["task_requirements"]["selected_candidate_acceptance_gate"]["passed"] is False
 
 
 def test_invalid_zero_runtime_is_rejected_before_any_candidate_or_model_loading(tmp_path, monkeypatch, capsys):
