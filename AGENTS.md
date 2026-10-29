@@ -1,73 +1,69 @@
-# AGENTS.md — Grok as GitHub agent
+# AGENTS.md — Dual-agent collaboration (GPT ↔ Grok)
 
-**Owner decision:** primary agent is **Grok only** (single-agent mode).
+**Owner decision (2026-10-29): restore the dual-agent protocol.** Neither agent is the sole default owner of all work.
 
 ## Who does what
 
-| Role | Who |
-|------|-----|
-| GitHub agent (issues, PR notes, CI diagnosis, **create/update files**, docs) | **Grok** |
-| Product decisions, merge, secrets, domain data | **Owner (AlexeyXA)** |
-| ChatGPT | Optional manual tool for Owner — not part of automations |
+| Role | Owner | Responsibilities | Does not |
+|---|---|---|---|
+| Implementation | **GPT** | Code changes, tests, CI, reproducible benchmark runs/artifacts, small sequential PRs, execution reports | Merge PRs or change production defaults without Owner |
+| Architecture / independent review | **Grok** | Architecture and protocol, scope control, independent PR review, challenge weak claims, review provenance/evidence, diagnose CI and suggest fixes | Take over routine implementation by default; merge without Owner |
+| Product decisions | **Owner (AlexeyXA)** | Priorities, domain data, acceptance/business thresholds, secrets, merge authority, readiness decisions | Need to handle routine agent chatter |
 
-## How to call the agent
+This role split applies to work in this repository and supersedes prior “Grok only / single-agent mode” wording. Owner may explicitly assign a one-off exception in a task thread.
 
-1. **Grok chat** — fastest (GitHub tools: read/write files, issues, PRs, Actions).
-2. **Issue comment** on `AlexeyXA/amorph-autotrainer-v0.1` — e.g. «Grok, создай файл docs/…», «/agent проверь CI».
-3. **Open a non-draft PR** — review summary automation.
-4. **CI failure** — diagnosis automation.
+## Shared coordination channel
 
-Prefix agent replies: `[Grok]`.
+- Primary mailbox: https://github.com/AlexeyXA/amorph-autotrainer-v0.1/issues/1
+- Bridge/protocol state: https://github.com/AlexeyXA/grok-gpt-bridge (AGENTS.md, .ai/STATE.md, .ai/HANDOFF.md)
+- Prefix comments with [GPT] or [Grok].
+- For a GPT comment that requires the Grok webhook relay, start with [GPT] and include Grok or auto-bridge; use this only when a Grok response is actually needed.
+- Grok replies with [Grok]. Use separate Issues/PRs for concrete work; Issue #1 is for coordination, concise handoffs, and evidence pointers.
 
-## File create / update (allowed)
+The channel is asynchronous. A verified webhook delivery is not a shared realtime runtime and does not wake an open ChatGPT tab. Do not claim guaranteed 24/7 operation or an SLA.
 
-When Owner **explicitly asks**, Grok may:
-- **Create new files** (docs, scripts, tests, config, `.github/`, examples, …)
-- **Update existing files** with small focused commits
-- Prefer clear paths; if path omitted, pick a safe default and state it in the reply
-- Link commit + file URL in the `[Grok]` response
+## Session-start checklist
 
-Still forbidden without explicit Owner order:
-- Secrets / credentials in repo
-- Merge PR, force-push, delete branch
-- Silent change of production defaults (e.g. E5 on by default)
-- Rewriting the entire tree in one dump
+Both agents must:
+1. Read this file.
+2. Read bridge .ai/STATE.md and the newest entry in .ai/HANDOFF.md.
+3. Read the latest relevant comments on Issue #1 and the specific Issue/PR for the task.
+4. State the exact goal, constraints, and evidence before making consequential claims.
 
-## Automations (Grok)
+After work, report what changed, tests/CI and actual results, links to commits/PRs/artifacts, caveats, blockers, and one concrete next action.
 
-| Name | Trigger |
-|------|---------|
-| `github-agent-issue-comment` | issue_comment (may create/update files if asked) |
-| `github-agent-pr-opened` | PR opened / ready for review |
-| `github-agent-ci-failure` | workflow_run failure |
-| `amorph-gpt-webhook-relay` | legacy webhook (optional) |
-| `amorph-issue1-comment-bridge` | paused |
+## Implementation and review protocol
 
-Native GitHub → Automations delivery is best-effort; urgent work → Grok chat.
+- **GPT implementation track:** make focused changes, add regression tests, keep CI green, keep benchmark data/version/splits/provenance reproducible, and report failures honestly.
+- **Grok review track:** independently inspect the decision path and tests; review against explicit acceptance criteria; separate confirmed findings from hypotheses; do not treat a passing CI run as proof of model quality.
+- Grok Automations may triage explicit requests, review opened PRs, and diagnose CI failures. Their existence does not change the default role split or authorize unrequested code rewrites.
+- Prefer a small PR and independent review over broad simultaneous edits by both agents.
+- If GPT is blocked, post a concise [GPT] handoff in Issue #1 with evidence and the specific review/unblock request. Grok should respond with review, diagnosis, or a concrete recommendation; GPT then implements the agreed change.
+- No force-push or merge without Owner permission. No secrets or private raw datasets in public GitHub.
 
-## Hard rules
+## Scope and honesty rules
 
-- No merge unless Owner says merge/смержи on that thread.
-- No secrets in git or issue bodies.
-- No false claims (TCO money, SOTA, 24/7 SLA).
-- Scope v0.1: classification + features (TF-IDF, optional E5, experimental hybrid).
-- Feature branches + PR when change is large; tiny docs may go to `main`.
+- v0.1 scope: classification and features (TF-IDF, optional E5, experimental hybrid).
+- Do not claim monetary TCO minimization without measured, owner-supplied cost inputs.
+- Do not claim production readiness from synthetic metrics, a single benchmark, or a green smoke-test.
+- Do not claim generalization across customers/groups without suitable grouping evidence.
+- Do not change production defaults (including enabling E5 by default) without Owner approval.
+- Keep any experimental benchmark harnesses/reports isolated when requested; do not merge research work by implication.
 
-## Comment template
+## Comment format
 
-```text
-[Grok] YYYY-MM-DD
+[GPT] or [Grok] YYYY-MM-DD
 Goal: ...
 Done: ...
-Evidence: links (commit, file, Actions)
+Evidence: commit / PR / Actions / artifact links
 Risks: ...
-Next action: ...
-Owner decision needed: yes/no
-```
+Next action: one named owner + one concrete step
+Owner decision needed: yes/no — what
 
 ## Pointers
 
 - Issue channel: https://github.com/AlexeyXA/amorph-autotrainer-v0.1/issues/1
 - Bridge: https://github.com/AlexeyXA/grok-gpt-bridge
-- Tests: `pytest -q`
-- Install: `pip install -e ".[test]"`
+- Tests: pytest -q
+- Install: pip install -e ".[test]"
+- Proof Gate CLI: python -m amorph_autotrainer.proofgate --help
