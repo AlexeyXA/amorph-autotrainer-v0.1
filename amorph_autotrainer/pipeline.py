@@ -784,7 +784,7 @@ def run_training(
             "baseline_reference_subtype": baseline_proofgate.subtype,
             "baseline_reference_report_sha256": baseline_proofgate_payload["report_sha256"],
             "decision_passed": selected_gate["passed"],
-            "decision_passed_scope": "aggregate_proofgate_metric_only; not overall task acceptance",
+            "decision_passed_scope": "legacy_gate_projection_after_power_and_parity_checks; not overall task acceptance",
             "gate_passed_for_configured_metric": gate_passed_for_configured_metric,
             "legacy_selected_gate_passed": legacy_selected_gate_passed,
             "legacy_parity_status": proofgate_parity_status,
